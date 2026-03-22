@@ -2,6 +2,24 @@ import React, { useState, useEffect, useRef, Suspense, lazy } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link, useLocation, useNavigate } from 'react-router-dom';
 import { Dropdown } from './components/Dropdown';
 import { TourGuide, resetTour } from './components/TourGuide';
+import { LoginPage } from './components/LoginPage';
+
+interface ClawUser {
+  username: string;
+  displayName: string;
+  role: string;
+  avatar: string | null;
+  demo?: boolean;
+}
+
+function readUser(): ClawUser | null {
+  try {
+    const raw = localStorage.getItem('clawboard-user');
+    return raw ? (JSON.parse(raw) as ClawUser) : null;
+  } catch {
+    return null;
+  }
+}
 
 // Route-level code splitting — loaded on demand
 const Dashboard           = lazy(() => import('./components/Dashboard').then(m => ({ default: m.Dashboard })));
@@ -201,15 +219,18 @@ const LiveCost = () => {
   );
 };
 
-const AppShell = ({ theme, setTheme }: { theme: string; setTheme: (t: string) => void }) => {
-  const navigate = useNavigate();
+const AppShell = ({ theme, setTheme, onLogout }: { theme: string; setTheme: (t: string) => void; onLogout: () => void }) => {
+  const navigate   = useNavigate();
   const [tourRun, setTourRun] = useState(false);
+  const user = readUser();
+  const displayName = user?.displayName ?? 'Admin';
+  const avatarSeed  = encodeURIComponent(user?.username ?? 'Admin');
+  const avatarSrc   = user?.avatar ?? `https://api.dicebear.com/7.x/notionists/svg?seed=${avatarSeed}&backgroundColor=8b5cf6`;
 
   const handleLogout = () => {
     localStorage.removeItem('clawboard-token');
     localStorage.removeItem('clawboard-user');
-    navigate('/');
-    window.location.reload();
+    onLogout();
   };
 
   const handleRestartTour = () => {
@@ -226,6 +247,11 @@ const AppShell = ({ theme, setTheme }: { theme: string; setTheme: (t: string) =>
           <h1>Bienvenue sur ClawBoard</h1>
           <div style={{ display: 'flex', alignItems: 'center', gap: '24px' }}>
             <LiveCost />
+            {user?.demo && (
+              <div style={{ padding: '4px 12px', borderRadius: '999px', background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.25)', color: '#f59e0b', fontSize: '0.75rem', fontWeight: 700 }}>
+                Démo
+              </div>
+            )}
             <ThemeSwitcher theme={theme} setTheme={setTheme} />
 
             <Dropdown
@@ -233,8 +259,8 @@ const AppShell = ({ theme, setTheme }: { theme: string; setTheme: (t: string) =>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '10px', background: 'rgba(255,255,255,0.05)', padding: '6px 16px 6px 6px', borderRadius: '999px', border: '1px solid var(--border-subtle)', transition: 'background 0.2s' }}
                   onMouseOver={(e) => e.currentTarget.style.background = 'rgba(255,255,255,0.1)'}
                   onMouseOut={(e) => e.currentTarget.style.background = 'rgba(255,255,255,0.05)'}>
-                  <img src="https://api.dicebear.com/7.x/notionists/svg?seed=Admin&backgroundColor=8b5cf6" alt="Profile" style={{ width: '34px', height: '34px', borderRadius: '50%' }} />
-                  <span style={{ fontWeight: 600, fontSize: '0.95rem', color: 'var(--text-primary)' }}>Admin</span>
+                  <img src={avatarSrc} alt="Profile" style={{ width: '34px', height: '34px', borderRadius: '50%' }} />
+                  <span style={{ fontWeight: 600, fontSize: '0.95rem', color: 'var(--text-primary)' }}>{displayName}</span>
                 </div>
               }
               items={[
@@ -256,9 +282,21 @@ const AppShell = ({ theme, setTheme }: { theme: string; setTheme: (t: string) =>
 
 const App = () => {
   const { theme, setTheme } = useTheme();
+  const [authenticated, setAuthenticated] = useState<boolean>(
+    () => Boolean(localStorage.getItem('clawboard-token'))
+  );
+
+  if (!authenticated) {
+    return (
+      <Router>
+        <LoginPage onLogin={() => setAuthenticated(true)} />
+      </Router>
+    );
+  }
+
   return (
     <Router>
-      <AppShell theme={theme} setTheme={setTheme} />
+      <AppShell theme={theme} setTheme={setTheme} onLogout={() => setAuthenticated(false)} />
     </Router>
   );
 };

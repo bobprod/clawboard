@@ -1,12 +1,21 @@
 /**
- * apiFetch — drop-in fetch wrapper that injects the Bearer token when
- * VITE_AUTH_TOKEN is set. Falls back to plain fetch if the variable is empty.
+ * apiFetch — wrapper fetch qui injecte le token Bearer.
+ *
+ * Priorité :
+ *   1. localStorage `clawboard-token`  (défini après login)
+ *   2. Variable d'environnement VITE_AUTH_TOKEN (CI / déploiement)
+ *   3. Aucun header Authorization (accès public)
  */
-const AUTH_TOKEN: string = import.meta.env.VITE_AUTH_TOKEN ?? '';
+const ENV_TOKEN: string = import.meta.env.VITE_AUTH_TOKEN ?? '';
+
+function getToken(): string {
+  return localStorage.getItem('clawboard-token') ?? ENV_TOKEN;
+}
 
 export function apiFetch(url: string, init: RequestInit = {}): Promise<Response> {
-  if (!AUTH_TOKEN) return fetch(url, init);
+  const token = getToken();
+  if (!token) return fetch(url, init);
   const headers = new Headers(init.headers);
-  headers.set('Authorization', `Bearer ${AUTH_TOKEN}`);
+  headers.set('Authorization', `Bearer ${token}`);
   return fetch(url, { ...init, headers });
 }
