@@ -1,0 +1,662 @@
+import { useState, useEffect, useRef } from 'react';
+import { useNavigate, useLocation } from 'react-router-dom';
+import { apiFetch } from '../lib/apiFetch';
+import { SkillsPicker } from './SkillsPicker';
+import {
+  ArrowLeft, Save, Play, Plus, Minus,
+  ToggleLeft, ToggleRight, PenLine, Loader2, HelpCircle,
+  BookmarkPlus, AlertTriangle, AlertCircle, Info, X, RotateCcw,
+} from 'lucide-react';
+import { TaskCreatorTour, resetTaskCreatorTour } from './TaskCreatorTour';
+
+const BASE = 'http://localhost:4000';
+const DRAFT_KEY = 'clawboard-task-creator-draft';
+
+const MODELS = [
+  { id: 'claude-sonnet-4-6',                       label: 'Claude Sonnet 4.6',      color: '#8b5cf6' },
+  { id: 'nvidia/llama-3.1-nemotron-ultra-253b-v1', label: '⚡ Nemotron Ultra 253B', color: '#76b900' },
+  { id: 'nvidia/llama-3.3-nemotron-super-49b-v1',  label: 'Nemotron Super 49B',     color: '#76b900' },
+  { id: 'meta/llama-3.1-405b-instruct',            label: '⚡ Llama 3.1 405B',      color: '#0064c8' },
+  { id: 'deepseek-ai/deepseek-v3.2',               label: 'DeepSeek V3.2',          color: '#1a73e8' },
+  { id: 'qwen/qwq-32b',                            label: 'QwQ 32B',                color: '#9333ea' },
+  { id: 'moonshotai/kimi-k2.5',                    label: 'Kimi K2.5',              color: '#3b82f6' },
+  { id: 'gemini/gemini-2.5-flash',                 label: 'Gemini 2.5 Flash',       color: '#4285f4' },
+  { id: 'ollama/qwen2.5',                          label: 'Qwen 2.5 (local)',        color: '#10b981' },
+];
+
+const CHANNELS = ['telegram', 'discord', 'whatsapp', 'webhook'] as const;
+
+const inputStyle: React.CSSProperties = {
+  width: '100%', padding: '9px 12px', borderRadius: 8,
+  background: 'var(--bg-glass)', border: '1px solid var(--border-subtle)',
+  color: 'var(--text-primary)', fontSize: '0.875rem', outline: 'none',
+  fontFamily: 'inherit', boxSizing: 'border-box', transition: 'border-color 0.2s',
+};
+
+function Field({ label, children, hint }: { label: string; children: React.ReactNode; hint?: string }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <label style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.5px', display: 'flex', alignItems: 'center', gap: 6 }}>
+        {label}
+        {hint && (
+          <span title={hint} style={{ cursor: 'help', opacity: 0.6 }}>
+            <Info size={11} />
+          </span>
+        )}
+      </label>
+      {children}
+    </div>
+  );
+}
+
+type WarnItem = { key: string; msg: string; severity: 'error' | 'warn' | 'info' };
+
+function ValidationBanner({ items }: { items: WarnItem[] }) {
+  if (!items.length) return null;
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      {items.map(w => (
+        <div key={w.key} style={{
+          display: 'flex', alignItems: 'center', gap: 8,
+          padding: '8px 12px', borderRadius: 8, fontSize: '12.5px',
+          background: w.severity === 'error' ? 'rgba(239,68,68,0.08)' : w.severity === 'warn' ? 'rgba(245,158,11,0.08)' : 'rgba(59,130,246,0.08)',
+          border: `1px solid ${w.severity === 'error' ? 'rgba(239,68,68,0.25)' : w.severity === 'warn' ? 'rgba(245,158,11,0.25)' : 'rgba(59,130,246,0.25)'}`,
+          color: w.severity === 'error' ? '#ef4444' : w.severity === 'warn' ? '#f59e0b' : 'var(--brand-primary)',
+        }}>
+          {w.severity === 'error' ? <AlertCircle size={14} /> : w.severity === 'warn' ? <AlertTriangle size={14} /> : <Info size={14} />}
+          {w.msg}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+interface PrefillData {
+  name?: string;
+  instructions?: string;
+  skillName?: string;
+  llmModel?: string;
+  agent?: string;
+  canal?: string;
+  destinataire?: string;
+  timeoutMin?: number;
+  objectives?: string[];
+  disablePreInstructions?: boolean;
+}
+
+export const TaskCreator = () => {
+  const navigate   = useNavigate();
+  const location   = useLocation();
+  const prefill    = (location.state as { prefill?: PrefillData } | null)?.prefill;
+
+  const initialized = useRef(false);
+
+  const [name,               setName]               = useState('');
+  const [instructions,       setInstructions]       = useState('');
+  const [skillName,          setSkillName]          = useState('');
+  const [llmModel,           setLlmModel]           = useState('');
+  const [agent,              setAgent]              = useState('main');
+  const [canal,              setCanal]              = useState('telegram');
+  const [destinataire,       setDestinataire]       = useState('');
+  const [timeoutMin,         setTimeoutMin]         = useState(30);
+  const [objectives,         setObjectives]         = useState<string[]>([]);
+  const [disablePreInstructions, setDisablePreInstructions] = useState(false);
+  const [saving,             setSaving]             = useState(false);
+  const [saveError,          setSaveError]          = useState<string | null>(null);
+  const [enhancing,          setEnhancing]          = useState(false);
+  const [tourForceRun,       setTourForceRun]       = useState(false);
+  const [saveAsModel,        setSaveAsModel]        = useState(false);
+  const [showDraftBanner,    setShowDraftBanner]    = useState(false);
+  const [confirmCancel,      setConfirmCancel]      = useState(false);
+
+  // ── Restore draft or prefill on mount ─────────────────────────────────────
+  useEffect(() => {
+    if (initialized.current) return;
+    initialized.current = true;
+
+    if (prefill) {
+      // Clone / Rejouer flow — prefill takes priority over draft
+      if (prefill.name)               setName(prefill.name);
+      if (prefill.instructions)       setInstructions(prefill.instructions);
+      if (prefill.skillName)          setSkillName(prefill.skillName);
+      if (prefill.llmModel)           setLlmModel(prefill.llmModel);
+      if (prefill.agent)              setAgent(prefill.agent);
+      if (prefill.canal)              setCanal(prefill.canal);
+      if (prefill.destinataire)       setDestinataire(prefill.destinataire);
+      if (prefill.timeoutMin)         setTimeoutMin(prefill.timeoutMin);
+      if (prefill.objectives?.length) setObjectives(prefill.objectives);
+      if (prefill.disablePreInstructions !== undefined) setDisablePreInstructions(prefill.disablePreInstructions);
+      return;
+    }
+
+    const raw = localStorage.getItem(DRAFT_KEY);
+    if (!raw) return;
+    try {
+      const draft: PrefillData = JSON.parse(raw);
+      if (draft.name || draft.instructions) {
+        // Restore silently and show banner
+        if (draft.name)               setName(draft.name);
+        if (draft.instructions)       setInstructions(draft.instructions);
+        if (draft.skillName)          setSkillName(draft.skillName ?? '');
+        if (draft.llmModel)           setLlmModel(draft.llmModel ?? '');
+        if (draft.agent)              setAgent(draft.agent ?? 'main');
+        if (draft.canal)              setCanal(draft.canal ?? 'telegram');
+        if (draft.destinataire)       setDestinataire(draft.destinataire ?? '');
+        if (draft.timeoutMin)         setTimeoutMin(draft.timeoutMin ?? 30);
+        if (draft.objectives?.length) setObjectives(draft.objectives);
+        if (draft.disablePreInstructions !== undefined) setDisablePreInstructions(draft.disablePreInstructions);
+        setShowDraftBanner(true);
+      }
+    } catch (_) {}
+  }, []);
+
+  // ── Auto-save draft ────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!initialized.current) return;
+    if (!name.trim() && !instructions.trim()) {
+      localStorage.removeItem(DRAFT_KEY);
+      return;
+    }
+    const draft: PrefillData = {
+      name, instructions, skillName, llmModel, agent,
+      canal, destinataire, timeoutMin, objectives, disablePreInstructions,
+    };
+    localStorage.setItem(DRAFT_KEY, JSON.stringify(draft));
+  }, [name, instructions, skillName, llmModel, agent, canal, destinataire, timeoutMin, objectives, disablePreInstructions]);
+
+  // ── Computed helpers ───────────────────────────────────────────────────────
+  const wordCount        = instructions.trim() ? instructions.trim().split(/\s+/).length : 0;
+  const charCount        = instructions.length;
+  const filledObjectives = objectives.filter(o => o.trim()).length;
+  const hasContent       = name.trim().length > 0 || instructions.trim().length > 0;
+
+  const showTimeoutHint  = wordCount > 150 || filledObjectives >= 3;
+  const suggestedTimeout = Math.max(45, Math.ceil(filledObjectives * 15 + wordCount / 10));
+
+  // ── Validation warnings ────────────────────────────────────────────────────
+  const warnings: WarnItem[] = [];
+  if (name.trim() && !llmModel) {
+    warnings.push({ key: 'no-model', msg: 'Aucun modèle LLM sélectionné — l\'agent ne pourra pas démarrer.', severity: 'error' });
+  }
+  if (destinataire.trim() === '' && canal && name.trim()) {
+    warnings.push({ key: 'no-dest', msg: `Canal "${canal}" configuré mais aucun destinataire renseigné — les résultats ne seront pas livrés.`, severity: 'warn' });
+  }
+  if (instructions.trim() && wordCount < 20) {
+    warnings.push({ key: 'short-prompt', msg: `Instructions courtes (${wordCount} mots) — un prompt plus détaillé améliore la qualité des résultats.`, severity: 'warn' });
+  }
+
+  const canSave = name.trim().length > 0;
+
+  // ── Enhance instructions ───────────────────────────────────────────────────
+  const handleEnhance = async () => {
+    if (!instructions.trim() || enhancing) return;
+    setEnhancing(true);
+    try {
+      const res = await apiFetch(`${BASE}/api/enhance-prompt`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ instructions }),
+      });
+      const data = await res.json();
+      if (data.enhanced) setInstructions(data.enhanced);
+    } catch (_) {}
+    setEnhancing(false);
+  };
+
+  // ── Create task ────────────────────────────────────────────────────────────
+  const handleCreate = async (andRun = false) => {
+    if (!canSave) return;
+    setSaving(true); setSaveError(null);
+    try {
+      const cleanObjectives = objectives.filter(o => o.trim());
+      const payload = {
+        name, title: name,
+        instructions, description: instructions,
+        skillName, llmModel,
+        agent, agentId: agent,
+        canal, destinataire,
+        channelTarget: { platform: canal, targetId: destinataire },
+        timeoutMin,
+        objectives: cleanObjectives,
+        disablePreInstructions,
+      };
+      const res = await apiFetch(`${BASE}/api/tasks`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) throw new Error(`Erreur ${res.status}`);
+      const created = await res.json();
+
+      // Optionally save as model
+      if (saveAsModel) {
+        try {
+          await apiFetch(`${BASE}/api/modeles`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              name, instructions, skillName, llmModel,
+              agent, canal, destinataire, timeoutMin,
+              objectives: cleanObjectives, disablePreInstructions,
+            }),
+          });
+        } catch (_) { /* non-blocking */ }
+      }
+
+      if (andRun && created?.id) {
+        await apiFetch(`${BASE}/api/tasks/${created.id}/run`, { method: 'POST' });
+      }
+
+      // Clear draft on success
+      localStorage.removeItem(DRAFT_KEY);
+      navigate(created?.id ? `/tasks/${created.id}` : '/tasks');
+    } catch (e: any) {
+      setSaveError(e.message);
+      setSaving(false);
+    }
+  };
+
+  // ── Cancel handler ─────────────────────────────────────────────────────────
+  const handleCancel = () => {
+    if (hasContent) {
+      setConfirmCancel(true);
+    } else {
+      localStorage.removeItem(DRAFT_KEY);
+      navigate('/tasks');
+    }
+  };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 24, maxWidth: 820, margin: '0 auto', width: '100%', paddingBottom: 40 }}>
+
+      {/* Guided Tour */}
+      <TaskCreatorTour
+        forceRun={tourForceRun}
+        onClose={() => setTourForceRun(false)}
+      />
+
+      {/* ── Draft restored banner ──────────────────────────────────────────── */}
+      {showDraftBanner && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 10,
+          padding: '10px 16px', borderRadius: 10,
+          background: 'rgba(59,130,246,0.08)', border: '1px solid rgba(59,130,246,0.25)',
+          color: 'var(--brand-primary)', fontSize: '13px',
+        }}>
+          <RotateCcw size={14} />
+          <span style={{ flex: 1 }}>Brouillon restauré — votre dernière session a été récupérée automatiquement.</span>
+          <button
+            onClick={() => {
+              localStorage.removeItem(DRAFT_KEY);
+              setName(''); setInstructions(''); setSkillName(''); setLlmModel('');
+              setAgent('main'); setCanal('telegram'); setDestinataire('');
+              setTimeoutMin(30); setObjectives([]); setDisablePreInstructions(false);
+              setShowDraftBanner(false);
+            }}
+            style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--brand-primary)', display: 'flex', alignItems: 'center', gap: 4, fontSize: '12px', fontWeight: 600 }}
+          >
+            <X size={12} /> Effacer
+          </button>
+          <button
+            onClick={() => setShowDraftBanner(false)}
+            style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', display: 'flex' }}
+          >
+            <X size={14} />
+          </button>
+        </div>
+      )}
+
+      {/* ── Pre-fill banner (clone/rejouer) ───────────────────────────────── */}
+      {prefill && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 10,
+          padding: '10px 16px', borderRadius: 10,
+          background: 'rgba(139,92,246,0.08)', border: '1px solid rgba(139,92,246,0.25)',
+          color: 'var(--brand-accent)', fontSize: '13px',
+        }}>
+          <Info size={14} />
+          <span>Formulaire pré-rempli depuis une tâche existante. Modifiez les champs souhaités avant de créer.</span>
+        </div>
+      )}
+
+      {/* ── Header ────────────────────────────────────────────────────────── */}
+      <div data-tour="creator-header" style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+        <button onClick={handleCancel} style={{
+          display: 'flex', padding: 10,
+          background: 'var(--bg-surface)', border: '1px solid var(--border-subtle)',
+          borderRadius: 12, color: 'var(--text-secondary)', cursor: 'pointer',
+        }}>
+          <ArrowLeft size={20} />
+        </button>
+        <div style={{ flex: 1 }}>
+          <h2 style={{ fontSize: '1.5rem', margin: 0, marginBottom: 4, color: 'var(--text-primary)' }}>Nouvelle Mission</h2>
+          <div style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>Configurez les paramètres de routage et d'intelligence.</div>
+        </div>
+        <button
+          onClick={() => { resetTaskCreatorTour(); setTourForceRun(true); }}
+          title="Relancer le guide interactif"
+          style={{
+            display: 'flex', alignItems: 'center', gap: 6,
+            padding: '8px 14px', borderRadius: 10, cursor: 'pointer',
+            background: 'rgba(139,92,246,0.08)', border: '1px solid rgba(139,92,246,0.25)',
+            color: 'var(--brand-accent)', fontSize: '0.8rem', fontWeight: 600,
+            transition: 'all 0.2s',
+          }}
+        >
+          <HelpCircle size={15} />
+          Guide
+        </button>
+      </div>
+
+      {/* ── Cancel confirmation inline ─────────────────────────────────────── */}
+      {confirmCancel && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 12,
+          padding: '12px 16px', borderRadius: 10,
+          background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.3)',
+          color: '#ef4444', fontSize: '13px',
+        }}>
+          <AlertTriangle size={15} />
+          <span style={{ flex: 1 }}>Annuler et perdre les modifications non sauvegardées ?</span>
+          <button
+            onClick={() => { localStorage.removeItem(DRAFT_KEY); navigate('/tasks'); }}
+            style={{
+              padding: '5px 14px', borderRadius: 7, fontWeight: 700, fontSize: '12px',
+              background: 'rgba(239,68,68,0.15)', border: '1px solid rgba(239,68,68,0.4)',
+              color: '#ef4444', cursor: 'pointer',
+            }}
+          >Oui, quitter</button>
+          <button
+            onClick={() => setConfirmCancel(false)}
+            style={{
+              padding: '5px 14px', borderRadius: 7, fontWeight: 700, fontSize: '12px',
+              background: 'var(--bg-glass)', border: '1px solid var(--border-subtle)',
+              color: 'var(--text-secondary)', cursor: 'pointer',
+            }}
+          >Continuer</button>
+        </div>
+      )}
+
+      {/* ── Main card ─────────────────────────────────────────────────────── */}
+      <div style={{
+        background: 'var(--bg-surface)', border: '1px solid var(--border-subtle)',
+        borderRadius: 16, padding: 28, display: 'flex', flexDirection: 'column', gap: 22,
+      }}>
+
+        {/* Name */}
+        <div data-tour="creator-name">
+          <Field label="Nom de la tâche" hint="Donnez un nom court et mémorable à cette mission">
+            <input
+              value={name}
+              onChange={e => setName(e.target.value)}
+              style={{ ...inputStyle, fontSize: '1rem', fontWeight: 600 }}
+              placeholder="Ex : Analyser les logs système…"
+              autoFocus
+            />
+          </Field>
+        </div>
+
+        {/* Instructions */}
+        <div data-tour="creator-instructions">
+          <Field label="Prompt / Instructions" hint="Structure recommandée : Rôle → Contexte → Tâche → Format → Contraintes">
+            <div style={{ position: 'relative' }}>
+              <textarea
+                value={instructions}
+                onChange={e => setInstructions(e.target.value)}
+                rows={6}
+                style={{ ...inputStyle, fontFamily: 'var(--mono)', resize: 'vertical', lineHeight: 1.6, paddingRight: 44 }}
+                placeholder="Instructions système pour cet agent…"
+              />
+              <button
+                data-tour="creator-enhance"
+                onClick={handleEnhance}
+                disabled={!instructions.trim() || enhancing}
+                title="Améliorer avec l'IA"
+                style={{
+                  position: 'absolute', bottom: 10, right: 10,
+                  width: 30, height: 30, borderRadius: 8,
+                  background: enhancing ? 'rgba(139,92,246,0.15)' : 'rgba(139,92,246,0.1)',
+                  border: '1px solid rgba(139,92,246,0.3)',
+                  color: instructions.trim() && !enhancing ? 'var(--brand-accent)' : 'var(--text-muted)',
+                  cursor: instructions.trim() && !enhancing ? 'pointer' : 'not-allowed',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  transition: 'all 0.2s',
+                }}
+              >
+                {enhancing
+                  ? <Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} />
+                  : <PenLine size={14} />}
+              </button>
+            </div>
+            {/* Word / char counter */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 4 }}>
+              <span style={{
+                fontSize: '11px',
+                color: wordCount < 20 && instructions.trim() ? '#f59e0b' : 'var(--text-muted)',
+              }}>
+                {wordCount} mot{wordCount !== 1 ? 's' : ''}
+                {wordCount < 20 && instructions.trim() && ' — prompt court, précisez davantage'}
+              </span>
+              <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>{charCount} car.</span>
+            </div>
+          </Field>
+        </div>
+
+        {/* Skill + LLM */}
+        <div data-tour="creator-skill-model" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+          <Field label="Skill" hint="Nom du skill ou module spécialisé (optionnel)">
+            <SkillsPicker value={skillName} onChange={setSkillName} />
+          </Field>
+          <Field label="Modèle LLM *" hint="Choisir selon la complexité et la sensibilité des données">
+            <select
+              value={llmModel}
+              onChange={e => setLlmModel(e.target.value)}
+              style={{
+                ...inputStyle, cursor: 'pointer',
+                borderColor: name.trim() && !llmModel ? 'rgba(239,68,68,0.5)' : undefined,
+              }}
+            >
+              <option value="">— Sélectionner —</option>
+              {MODELS.map(m => (
+                <option key={m.id} value={m.id}>{m.label}</option>
+              ))}
+            </select>
+          </Field>
+        </div>
+
+        {/* Agent + Timeout */}
+        <div data-tour="creator-agent-timeout" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+          <Field label="Agent" hint="Identifiant de l'agent d'exécution">
+            <input value={agent} onChange={e => setAgent(e.target.value)} style={inputStyle} placeholder="main" />
+          </Field>
+          <div>
+            <Field label="Timeout (min)" hint="Durée max avant arrêt forcé de la boucle agentique">
+              <input
+                type="number" min={1} max={1440} value={timeoutMin}
+                onChange={e => setTimeoutMin(Number(e.target.value))}
+                style={{ ...inputStyle, fontFamily: 'var(--mono)' }}
+              />
+            </Field>
+            {/* Timeout hint */}
+            {showTimeoutHint && timeoutMin < suggestedTimeout && (
+              <div style={{
+                marginTop: 6, display: 'flex', alignItems: 'center', gap: 6,
+                fontSize: '11.5px', color: '#f59e0b',
+                padding: '6px 10px', background: 'rgba(245,158,11,0.07)',
+                borderRadius: 6, border: '1px solid rgba(245,158,11,0.2)',
+              }}>
+                <AlertTriangle size={12} />
+                Tâche complexe — {suggestedTimeout} min recommandé
+                <button
+                  onClick={() => setTimeoutMin(suggestedTimeout)}
+                  style={{ marginLeft: 'auto', background: 'rgba(245,158,11,0.15)', border: '1px solid rgba(245,158,11,0.3)', borderRadius: 4, padding: '2px 8px', fontSize: '11px', color: '#f59e0b', cursor: 'pointer', fontWeight: 700 }}
+                >
+                  Appliquer
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Canal de livraison */}
+        <div data-tour="creator-canal" style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: 20 }}>
+          <div style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 12 }}>
+            Canal de livraison target
+          </div>
+          <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
+            {CHANNELS.map(c => (
+              <button key={c} onClick={() => setCanal(c)} style={{
+                padding: '8px 18px', borderRadius: 20, fontWeight: 600, cursor: 'pointer',
+                fontSize: '13px', textTransform: 'capitalize',
+                background: canal === c ? 'var(--brand-accent)' : 'var(--bg-glass)',
+                color: canal === c ? '#fff' : 'var(--text-secondary)',
+                border: `1px solid ${canal === c ? 'var(--brand-accent)' : 'var(--border-subtle)'}`,
+                transition: 'all 0.2s',
+              }}>{c}</button>
+            ))}
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: 14 }}>
+            <Field label="Canal">
+              <input value={canal} onChange={e => setCanal(e.target.value)} style={inputStyle} placeholder="discord, telegram…" />
+            </Field>
+            <Field
+              label={canal === 'telegram' ? 'Chat ID Telegram' : canal === 'discord' ? 'ID Salon Discord' : canal === 'whatsapp' ? 'Numéro WhatsApp' : 'URL Webhook'}
+              hint="Requis pour que l'agent puisse envoyer ses résultats"
+            >
+              <input
+                value={destinataire}
+                onChange={e => setDestinataire(e.target.value)}
+                style={{
+                  ...inputStyle, fontFamily: 'var(--mono)',
+                  borderColor: name.trim() && !destinataire.trim() ? 'rgba(245,158,11,0.5)' : undefined,
+                }}
+                placeholder={
+                  canal === 'telegram' ? '@username ou -100xxxxx' :
+                  canal === 'discord'  ? '1234567890…' :
+                  canal === 'whatsapp' ? '+336XXXXXXXX' :
+                  'https://votre-serveur.com/webhook'
+                }
+              />
+            </Field>
+          </div>
+        </div>
+
+        {/* Objectifs */}
+        <div data-tour="creator-objectives" style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: 20 }}>
+          <Field label="Objectifs" hint="Ce que doit accomplir concrètement cette tâche (mesurable, précis)">
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {objectives.map((obj, i) => (
+                <div key={i} style={{ display: 'flex', gap: 6 }}>
+                  <input
+                    value={obj}
+                    onChange={e => { const next = [...objectives]; next[i] = e.target.value; setObjectives(next); }}
+                    style={{ ...inputStyle, flex: 1 }}
+                    placeholder={`Objectif ${i + 1}…`}
+                  />
+                  <button onClick={() => setObjectives(objectives.filter((_, j) => j !== i))} style={{
+                    background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)',
+                    borderRadius: 6, color: '#ef4444', cursor: 'pointer', padding: '0 10px',
+                    display: 'flex', alignItems: 'center',
+                  }}><Minus size={13} /></button>
+                </div>
+              ))}
+              <button onClick={() => setObjectives([...objectives, ''])} style={{
+                display: 'flex', alignItems: 'center', gap: 6, padding: '7px 12px',
+                background: 'rgba(139,92,246,0.08)', border: '1px dashed rgba(139,92,246,0.3)',
+                borderRadius: 8, color: 'var(--brand-accent)', cursor: 'pointer', fontWeight: 600, fontSize: '12px',
+              }}>
+                <Plus size={13} />Ajouter un objectif
+              </button>
+            </div>
+          </Field>
+        </div>
+
+        {/* Options */}
+        <div data-tour="creator-preinstructions" style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: 20, display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {/* Disable pre-instructions toggle */}
+          <div style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+            padding: '10px 14px', background: 'var(--bg-glass)', borderRadius: 8,
+            border: '1px solid var(--border-subtle)',
+          }}>
+            <div>
+              <div style={{ fontWeight: 600, fontSize: '0.875rem', color: 'var(--text-primary)' }}>Désactiver pré-instructions</div>
+              <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: 2 }}>N'injecte pas le system prompt global dans cet agent</div>
+            </div>
+            <button onClick={() => setDisablePreInstructions(v => !v)} style={{
+              background: 'none', border: 'none', cursor: 'pointer',
+              color: disablePreInstructions ? 'var(--brand-accent)' : 'var(--text-muted)',
+            }}>
+              {disablePreInstructions ? <ToggleRight size={28} /> : <ToggleLeft size={28} />}
+            </button>
+          </div>
+
+          {/* Save as model toggle */}
+          <div
+            data-tour="creator-save-model"
+            style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              padding: '10px 14px', background: 'var(--bg-glass)', borderRadius: 8,
+              border: `1px solid ${saveAsModel ? 'rgba(139,92,246,0.35)' : 'var(--border-subtle)'}`,
+              transition: 'border-color 0.2s',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <BookmarkPlus size={16} style={{ color: saveAsModel ? 'var(--brand-accent)' : 'var(--text-muted)' }} />
+              <div>
+                <div style={{ fontWeight: 600, fontSize: '0.875rem', color: 'var(--text-primary)' }}>Enregistrer aussi comme modèle</div>
+                <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: 2 }}>Réutilisable depuis l'onglet Modèles</div>
+              </div>
+            </div>
+            <button onClick={() => setSaveAsModel(v => !v)} style={{
+              background: 'none', border: 'none', cursor: 'pointer',
+              color: saveAsModel ? 'var(--brand-accent)' : 'var(--text-muted)',
+            }}>
+              {saveAsModel ? <ToggleRight size={28} /> : <ToggleLeft size={28} />}
+            </button>
+          </div>
+        </div>
+
+        {/* Validation warnings */}
+        <ValidationBanner items={warnings} />
+
+        {/* API error */}
+        {saveError && (
+          <div style={{ fontSize: '13px', color: '#ef4444', padding: '8px 12px', background: 'rgba(239,68,68,0.08)', borderRadius: 8, border: '1px solid rgba(239,68,68,0.2)' }}>
+            ⚠️ {saveError}
+          </div>
+        )}
+
+        {/* Actions */}
+        <div data-tour="creator-actions" style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', paddingTop: 4 }}>
+          <button onClick={handleCancel} style={{
+            padding: '10px 20px', background: 'var(--bg-glass)', color: 'var(--text-secondary)',
+            border: '1px solid var(--border-subtle)', borderRadius: 10, cursor: 'pointer',
+            fontWeight: 600, fontSize: '0.875rem',
+          }}>
+            Annuler
+          </button>
+          <button onClick={() => handleCreate(false)} disabled={!canSave || saving} style={{
+            display: 'flex', alignItems: 'center', gap: 8, padding: '10px 22px',
+            background: 'var(--bg-glass)', color: 'var(--brand-accent)',
+            border: '1px solid rgba(139,92,246,0.4)', borderRadius: 10,
+            cursor: (!canSave || saving) ? 'not-allowed' : 'pointer',
+            fontWeight: 600, fontSize: '0.875rem', opacity: (!canSave || saving) ? 0.5 : 1,
+          }}>
+            <Save size={16} />{saveAsModel ? 'Créer + Modèle' : 'Créer'}
+          </button>
+          <button onClick={() => handleCreate(true)} disabled={!canSave || saving} style={{
+            display: 'flex', alignItems: 'center', gap: 8, padding: '10px 22px',
+            background: 'var(--brand-accent)', color: '#fff', border: 'none', borderRadius: 10,
+            cursor: (!canSave || saving) ? 'not-allowed' : 'pointer',
+            fontWeight: 600, fontSize: '0.875rem', opacity: (!canSave || saving) ? 0.6 : 1,
+            boxShadow: '0 4px 14px rgba(139,92,246,0.35)',
+          }}>
+            <Play size={16} />{saving ? 'Création…' : 'Créer & Lancer'}
+          </button>
+        </div>
+
+      </div>
+    </div>
+  );
+};

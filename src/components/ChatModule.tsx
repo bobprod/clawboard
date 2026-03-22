@@ -1,0 +1,1073 @@
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import {
+  Send, Bot, User, Settings2, Trash2, ChevronDown, ChevronRight,
+  Zap, Plus, Play, Trash, List, FileText, Clock, RefreshCw, X, Check,
+  AlertTriangle, Cpu, Copy, Download, History, PlusCircle,
+} from 'lucide-react';
+import { marked } from 'marked';
+import DOMPurify from 'dompurify';
+import { useApiKeys } from '../hooks/useApiKeys';
+import { useSSE } from '../hooks/useSSE';
+import { useNavigate } from 'react-router-dom';
+import { apiFetch } from '../lib/apiFetch';
+
+const BASE = 'http://localhost:4000';
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+interface ToolCall {
+  tool: string;
+  input: Record<string, unknown>;
+  result: Record<string, unknown>;
+}
+
+interface ChatMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  toolCalls?: ToolCall[];
+  ts: Date;
+  isLoading?: boolean;
+}
+
+interface PermissionConfig {
+  key: string;
+  label: string;
+  desc: string;
+  icon: React.ComponentType<{ size?: number }>;
+  danger?: boolean;
+  default: boolean;
+}
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+
+const MODELS = [
+  // ── Anthropic ──────────────────────────────────────────────────────────────
+  { id: 'claude-sonnet-4-6',                                label: 'Claude Sonnet 4.6',        provider: 'Anthropic',    color: '#8b5cf6' },
+  { id: 'openrouter/anthropic/claude-sonnet-4.6',            label: 'Claude via OpenRouter',    provider: 'OpenRouter',   color: '#6366f1' },
+  // ── NVIDIA NIM — Nemotron ───────────────────────────────────────────────────
+  { id: 'nvidia/llama-3.1-nemotron-ultra-253b-v1',           label: '⚡ Nemotron Ultra 253B',   provider: 'NVIDIA NIM',   color: '#76b900' },
+  { id: 'nvidia/llama-3.3-nemotron-super-49b-v1',            label: 'Nemotron Super 49B',       provider: 'NVIDIA NIM',   color: '#76b900' },
+  { id: 'mistralai/mistral-nemotron',                        label: 'Mistral Nemotron',         provider: 'NVIDIA NIM',   color: '#ff7000' },
+  // ── NVIDIA NIM — Llama ─────────────────────────────────────────────────────
+  { id: 'meta/llama-3.1-405b-instruct',                     label: '⚡ Llama 3.1 405B',        provider: 'NVIDIA NIM',   color: '#0064c8' },
+  { id: 'meta/llama-4-maverick-17b-128e-instruct',           label: 'Llama 4 Maverick (128E)',  provider: 'NVIDIA NIM',   color: '#0064c8' },
+  { id: 'meta/llama-3.3-70b-instruct',                      label: 'Llama 3.3 70B',            provider: 'NVIDIA NIM',   color: '#0064c8' },
+  { id: 'meta/llama-3.1-8b-instruct',                       label: 'Llama 3.1 8B',             provider: 'NVIDIA NIM',   color: '#0064c8' },
+  // ── NVIDIA NIM — DeepSeek & Qwen ───────────────────────────────────────────
+  { id: 'deepseek-ai/deepseek-v3.2',                        label: '⚡ DeepSeek V3.2',         provider: 'NVIDIA NIM',   color: '#1a73e8' },
+  { id: 'qwen/qwq-32b',                                     label: 'QwQ 32B (Raisonnement)',   provider: 'NVIDIA NIM',   color: '#9333ea' },
+  { id: 'qwen/qwen3.5-397b-a17b',                           label: '⚡ Qwen 3.5 397B',         provider: 'NVIDIA NIM',   color: '#9333ea' },
+  // ── NVIDIA NIM — Kimi ──────────────────────────────────────────────────────
+  { id: 'moonshotai/kimi-k2.5',                             label: 'Kimi K2.5',                provider: 'NVIDIA NIM',   color: '#3b82f6' },
+  // ── Google Gemini ──────────────────────────────────────────────────────────
+  { id: 'gemini/gemini-2.5-flash',                          label: 'Gemini 2.5 Flash',         provider: 'Google',       color: '#4285f4' },
+  // ── Local ──────────────────────────────────────────────────────────────────
+  { id: 'ollama/qwen2.5',                                   label: 'Qwen 2.5 (local)',         provider: 'Ollama',       color: '#10b981' },
+];
+
+const PERMISSION_CONFIGS: PermissionConfig[] = [
+  { key: 'list_tasks',      label: 'Lister les tâches',     desc: 'Voir toutes les tâches du système', icon: List,     default: true },
+  { key: 'get_task',        label: 'Consulter une tâche',   desc: 'Lire les détails d\'une tâche',     icon: FileText, default: true },
+  { key: 'create_task',     label: 'Créer des tâches',      desc: 'Ajouter de nouvelles tâches',       icon: Plus,     default: true },
+  { key: 'start_task',      label: 'Démarrer des tâches',   desc: 'Lancer des exécutions',             icon: Play,     default: true },
+  { key: 'patch_task',      label: 'Modifier des tâches',   desc: 'Changer le statut, le nom…',        icon: RefreshCw, default: true },
+  { key: 'list_modeles',    label: 'Voir les modèles',      desc: 'Consulter les templates',           icon: Cpu,      default: true },
+  { key: 'list_recurrences',label: 'Voir les récurrences',  desc: 'Consulter les CRONs',               icon: Clock,    default: true },
+  { key: 'delete_task',     label: 'Supprimer des tâches',  desc: 'Action irréversible !',             icon: Trash,    danger: true, default: false },
+];
+
+const TOOL_META: Record<string, { label: string; icon: React.ComponentType<{ size?: number }>; color: string }> = {
+  list_tasks:       { label: 'Tâches listées',   icon: List,     color: '#8b5cf6' },
+  get_task:         { label: 'Tâche consultée',  icon: FileText, color: '#6366f1' },
+  create_task:      { label: 'Tâche créée',      icon: Plus,     color: '#10b981' },
+  start_task:       { label: 'Tâche démarrée',   icon: Play,     color: '#3b82f6' },
+  delete_task:      { label: 'Tâche supprimée',  icon: Trash,    color: '#ef4444' },
+  patch_task:       { label: 'Tâche modifiée',   icon: RefreshCw, color: '#f59e0b' },
+  list_modeles:     { label: 'Modèles listés',   icon: Cpu,      color: '#a855f7' },
+  list_recurrences: { label: 'Récurrences',       icon: Clock,    color: '#06b6d4' },
+};
+
+function uid() { return `${Date.now()}-${Math.random().toString(36).slice(2)}`; }
+
+// ─── ToolCallCard ─────────────────────────────────────────────────────────────
+
+const ToolCallCard = ({ tc }: { tc: ToolCall }) => {
+  const [open, setOpen] = useState(false);
+  const meta = TOOL_META[tc.tool] || { label: tc.tool, icon: Zap, color: '#6b7280' };
+  const Icon = meta.icon;
+  const isDenied = (tc.result as any).__denied;
+  const hasError = (tc.result as any).error;
+
+  return (
+    <div style={{
+      border: `1px solid ${isDenied || hasError ? 'rgba(239,68,68,0.25)' : 'rgba(255,255,255,0.07)'}`,
+      borderRadius: 10, overflow: 'hidden', marginTop: 6, fontSize: '0.78rem',
+    }}>
+      <button
+        onClick={() => setOpen(o => !o)}
+        style={{
+          width: '100%', display: 'flex', alignItems: 'center', gap: 8,
+          padding: '7px 12px', background: 'rgba(0,0,0,0.15)',
+          border: 'none', cursor: 'pointer', textAlign: 'left',
+          color: isDenied || hasError ? '#ef4444' : 'var(--text-secondary)',
+        }}
+      >
+        <span style={{ color: isDenied || hasError ? '#ef4444' : meta.color, display: 'flex' }}><Icon size={13} /></span>
+        <span style={{ flex: 1, fontWeight: 600 }}>
+          {isDenied ? '⛔ Permission refusée' : hasError ? `❌ ${hasError}` : `✅ ${meta.label}`}
+        </span>
+        <span style={{ color: 'var(--text-muted)', fontFamily: 'monospace' }}>{tc.tool}</span>
+        {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+      </button>
+      {open && (
+        <div style={{ padding: '10px 12px', background: 'rgba(0,0,0,0.1)', display: 'flex', gap: 10 }}>
+          <div style={{ flex: 1 }}>
+            <div style={{ color: 'var(--text-muted)', marginBottom: 4 }}>Entrée</div>
+            <pre style={{ margin: 0, color: 'var(--text-secondary)', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+              {JSON.stringify(tc.input, null, 2)}
+            </pre>
+          </div>
+          <div style={{ flex: 1 }}>
+            <div style={{ color: 'var(--text-muted)', marginBottom: 4 }}>Résultat</div>
+            <pre style={{ margin: 0, color: isDenied || hasError ? '#ef4444' : '#10b981', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+              {JSON.stringify(tc.result, null, 2)}
+            </pre>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+// ─── Markdown-lite renderer ────────────────────────────────────────────────────
+
+// Configure marked
+marked.setOptions({ breaks: true, gfm: true });
+
+const MARKDOWN_STYLES = `
+  .md-body { font-size: 0.9rem; line-height: 1.6; }
+  .md-body p { margin: 4px 0; }
+  .md-body ul, .md-body ol { margin: 6px 0; padding-left: 20px; }
+  .md-body li { margin: 2px 0; }
+  .md-body h1, .md-body h2, .md-body h3 { margin: 10px 0 4px; font-weight: 700; }
+  .md-body h1 { font-size: 1.1em; }
+  .md-body h2 { font-size: 1em; }
+  .md-body h3 { font-size: 0.95em; color: var(--brand-accent); }
+  .md-body code { background: rgba(139,92,246,0.15); padding: 1px 6px; border-radius: 4px; font-family: monospace; font-size: 0.85em; color: var(--brand-accent); }
+  .md-body pre { background: rgba(0,0,0,0.3); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 12px; margin: 8px 0; overflow-x: auto; }
+  .md-body pre code { background: none; padding: 0; color: #e2e8f0; font-size: 0.82em; }
+  .md-body blockquote { border-left: 3px solid var(--brand-accent); margin: 6px 0; padding: 2px 12px; color: var(--text-secondary); font-style: italic; }
+  .md-body table { border-collapse: collapse; margin: 8px 0; width: 100%; font-size: 0.85em; }
+  .md-body th { background: rgba(139,92,246,0.15); padding: 6px 10px; border: 1px solid var(--border-subtle); font-weight: 600; }
+  .md-body td { padding: 5px 10px; border: 1px solid var(--border-subtle); }
+  .md-body tr:nth-child(even) { background: rgba(255,255,255,0.03); }
+  .md-body a { color: var(--brand-accent); text-decoration: underline; }
+  .md-body hr { border: none; border-top: 1px solid var(--border-subtle); margin: 10px 0; }
+  .md-body strong { font-weight: 700; }
+  .md-body em { font-style: italic; opacity: 0.9; }
+`;
+
+const MarkdownRenderer = ({ content, onTaskClick }: { content: string; onTaskClick?: (id: string) => void }) => {
+  // Replace tsk_XXX with clickable links before parsing
+  const withLinks = content.replace(/\b(tsk_\w+)\b/g, '[$1](/tasks/$1)');
+  const raw = marked.parse(withLinks) as string;
+  const html = DOMPurify.sanitize(raw, {
+    ALLOWED_TAGS: ['p','br','strong','em','b','i','ul','ol','li','h1','h2','h3','h4','blockquote','code','pre','table','thead','tbody','tr','th','td','hr','a','span'],
+    ALLOWED_ATTR: ['href','target','class','data-task'],
+  });
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!ref.current || !onTaskClick) return;
+    const links = ref.current.querySelectorAll<HTMLAnchorElement>('a[href^="/tasks/"]');
+    links.forEach(a => {
+      a.style.cssText = 'color:var(--brand-accent);font-weight:600;text-decoration:none;border-bottom:1px dashed currentColor;cursor:pointer;';
+      a.onclick = e => { e.preventDefault(); const id = a.getAttribute('href')?.split('/tasks/')[1]; if (id) onTaskClick(id); };
+    });
+  }, [html, onTaskClick]);
+  return (
+    <>
+      <style>{MARKDOWN_STYLES}</style>
+      <div ref={ref} className="md-body" dangerouslySetInnerHTML={{ __html: html }} />
+    </>
+  );
+};
+
+const renderMarkdown = (text: string, onTaskClick?: (id: string) => void) => <MarkdownRenderer content={text} onTaskClick={onTaskClick} />;
+
+// ─── MessageBubble ────────────────────────────────────────────────────────────
+
+const MessageBubble = ({ msg, onTaskClick }: { msg: ChatMessage; onTaskClick?: (id: string) => void }) => {
+  const isUser = msg.role === 'user';
+  const [hovered, setHovered] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  const copyContent = () => {
+    navigator.clipboard.writeText(msg.content).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+
+  return (
+    <div
+      style={{ display: 'flex', flexDirection: isUser ? 'row-reverse' : 'row', gap: 10, alignItems: 'flex-start', marginBottom: 16 }}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
+      {/* Avatar */}
+      <div style={{
+        width: 34, height: 34, borderRadius: '50%', flexShrink: 0,
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        background: isUser ? 'linear-gradient(135deg, var(--brand-primary), var(--brand-accent))' : 'linear-gradient(135deg, #1e1e2e, #2d2d3e)',
+        border: '2px solid rgba(255,255,255,0.1)',
+      }}>
+        {isUser ? <User size={16} color="white" /> : <Bot size={16} color="var(--brand-accent)" />}
+      </div>
+
+      {/* Bubble */}
+      <div style={{ maxWidth: '75%', display: 'flex', flexDirection: 'column', alignItems: isUser ? 'flex-end' : 'flex-start' }}>
+        {/* Header: name + time + copy button */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+          <span style={{ fontSize: '0.75rem', fontWeight: 600, color: isUser ? 'var(--brand-accent)' : 'var(--text-muted)' }}>
+            {isUser ? 'Vous' : 'Lia'}
+          </span>
+          <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+            {msg.ts.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
+          </span>
+          {/* Copy button — visible on hover, not on loading */}
+          {!msg.isLoading && hovered && (
+            <button
+              onClick={copyContent}
+              title="Copier le message"
+              style={{
+                background: 'var(--bg-glass)', border: '1px solid var(--border-subtle)',
+                borderRadius: 6, padding: '2px 7px', cursor: 'pointer',
+                display: 'flex', alignItems: 'center', gap: 4,
+                color: copied ? '#10b981' : 'var(--text-muted)', fontSize: '0.7rem',
+                transition: 'all 0.15s',
+              }}
+            >
+              {copied ? <Check size={11} /> : <Copy size={11} />}
+              {copied ? 'Copié !' : 'Copier'}
+            </button>
+          )}
+        </div>
+
+        <div style={{
+          padding: '10px 14px',
+          borderRadius: isUser ? '18px 18px 4px 18px' : '18px 18px 18px 4px',
+          background: isUser
+            ? 'linear-gradient(135deg, var(--brand-primary), var(--brand-accent))'
+            : 'var(--bg-glass)',
+          border: isUser ? 'none' : '1px solid var(--border-subtle)',
+          color: isUser ? 'white' : 'var(--text-primary)',
+          fontSize: '0.9rem',
+          lineHeight: 1.55,
+          boxShadow: hovered ? '0 2px 12px rgba(0,0,0,0.15)' : 'none',
+          transition: 'box-shadow 0.15s',
+        }}>
+          {msg.isLoading ? (
+            <div style={{ display: 'flex', gap: 5, alignItems: 'center', padding: '2px 0' }}>
+              {[0, 1, 2].map(i => (
+                <div key={i} style={{
+                  width: 7, height: 7, borderRadius: '50%',
+                  background: 'var(--brand-accent)',
+                  animation: `pulse 1.2s ${i * 0.2}s infinite`,
+                }} />
+              ))}
+            </div>
+          ) : (
+            renderMarkdown(msg.content, onTaskClick)
+          )}
+        </div>
+
+        {/* Tool calls */}
+        {msg.toolCalls && msg.toolCalls.length > 0 && (
+          <div style={{ width: '100%', maxWidth: 460, marginTop: 4 }}>
+            {msg.toolCalls.map((tc, i) => <ToolCallCard key={i} tc={tc} />)}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+// ─── PermissionsPanel ────────────────────────────────────────────────────────
+
+const PermissionsPanel = ({
+  permissions,
+  onChange,
+  onClose,
+}: {
+  permissions: Record<string, boolean>;
+  onChange: (key: string, val: boolean) => void;
+  onClose: () => void;
+}) => (
+  <div style={{
+    width: 300, background: 'var(--bg-surface)', borderLeft: '1px solid var(--border-subtle)',
+    display: 'flex', flexDirection: 'column', flexShrink: 0,
+  }}>
+    <div style={{
+      padding: '16px 18px', borderBottom: '1px solid var(--border-subtle)',
+      display: 'flex', alignItems: 'center', gap: 10,
+    }}>
+      <Settings2 size={16} color="var(--brand-accent)" />
+      <span style={{ fontWeight: 700, fontSize: '0.95rem', flex: 1 }}>Autorisations</span>
+      <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: 4 }}>
+        <X size={16} />
+      </button>
+    </div>
+
+    <div style={{ padding: '10px 12px', background: 'rgba(251,191,36,0.08)', borderBottom: '1px solid rgba(251,191,36,0.15)' }}>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+        <AlertTriangle size={13} color="#f59e0b" style={{ flexShrink: 0, marginTop: 2 }} />
+        <span style={{ fontSize: '0.75rem', color: '#f59e0b', lineHeight: 1.4 }}>
+          Ces permissions contrôlent ce que Lia peut faire sur le système. Les actions désactivées seront refusées.
+        </span>
+      </div>
+    </div>
+
+    <div style={{ flex: 1, overflowY: 'auto', padding: '8px 0' }}>
+      {PERMISSION_CONFIGS.map(cfg => {
+        const Icon = cfg.icon;
+        const enabled = permissions[cfg.key] ?? cfg.default;
+        return (
+          <div
+            key={cfg.key}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 12,
+              padding: '10px 18px',
+              borderBottom: '1px solid rgba(255,255,255,0.04)',
+              background: cfg.danger ? 'rgba(239,68,68,0.04)' : 'transparent',
+            }}
+          >
+            <span style={{ color: cfg.danger ? '#ef4444' : 'var(--text-muted)', display: 'flex' }}><Icon size={16} /></span>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: '0.85rem', fontWeight: 600, color: cfg.danger ? '#ef4444' : 'var(--text-primary)' }}>
+                {cfg.label}
+              </div>
+              <div style={{ fontSize: '0.73rem', color: 'var(--text-muted)', marginTop: 2 }}>{cfg.desc}</div>
+            </div>
+            {/* Toggle */}
+            <button
+              onClick={() => onChange(cfg.key, !enabled)}
+              style={{
+                width: 40, height: 22, borderRadius: 11, flexShrink: 0,
+                background: enabled ? (cfg.danger ? '#ef4444' : 'var(--brand-primary)') : 'rgba(255,255,255,0.1)',
+                border: 'none', cursor: 'pointer', position: 'relative', transition: 'background 0.2s',
+              }}
+            >
+              <div style={{
+                width: 16, height: 16, borderRadius: '50%', background: 'white',
+                position: 'absolute', top: 3, left: enabled ? 21 : 3,
+                transition: 'left 0.2s', boxShadow: '0 1px 4px rgba(0,0,0,0.3)',
+              }} />
+            </button>
+          </div>
+        );
+      })}
+    </div>
+
+    <div style={{ padding: '12px 18px', borderTop: '1px solid var(--border-subtle)' }}>
+      <button
+        onClick={() => {
+          PERMISSION_CONFIGS.forEach(c => onChange(c.key, c.default));
+        }}
+        style={{
+          width: '100%', padding: '8px', borderRadius: 8,
+          background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border-subtle)',
+          color: 'var(--text-secondary)', cursor: 'pointer', fontSize: '0.8rem',
+        }}
+      >
+        Réinitialiser les permissions
+      </button>
+    </div>
+  </div>
+);
+
+// ─── ModelSelector ────────────────────────────────────────────────────────────
+
+const ModelSelector = ({ model, onChange }: { model: string; onChange: (m: string) => void }) => {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const current = MODELS.find(m => m.id === model) || MODELS[0];
+
+  useEffect(() => {
+    const h = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+    document.addEventListener('mousedown', h);
+    return () => document.removeEventListener('mousedown', h);
+  }, []);
+
+  return (
+    <div ref={ref} style={{ position: 'relative' }}>
+      <button
+        onClick={() => setOpen(o => !o)}
+        style={{
+          display: 'flex', alignItems: 'center', gap: 8,
+          background: 'rgba(255,255,255,0.06)', border: '1px solid var(--border-subtle)',
+          borderRadius: 20, padding: '6px 12px', cursor: 'pointer',
+          color: 'var(--text-secondary)', fontSize: '0.82rem', fontWeight: 600,
+          transition: 'background 0.2s',
+        }}
+        onMouseOver={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.1)')}
+        onMouseOut={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.06)')}
+      >
+        <span style={{ width: 10, height: 10, borderRadius: '50%', background: current.color, flexShrink: 0, boxShadow: `0 0 6px ${current.color}88` }} />
+        <span>{current.label}</span>
+        <ChevronDown size={12} />
+      </button>
+      {open && (
+        <div style={{
+          position: 'absolute', top: 'calc(100% + 6px)', left: 0, zIndex: 50,
+          background: 'var(--bg-surface-elevated)', border: '1px solid var(--border-subtle)',
+          borderRadius: 10, padding: 6, minWidth: 240, boxShadow: 'var(--shadow-md)',
+        }}>
+          {MODELS.map(m => (
+            <button
+              key={m.id}
+              onClick={() => { onChange(m.id); setOpen(false); }}
+              style={{
+                width: '100%', display: 'flex', alignItems: 'center', gap: 10,
+                padding: '9px 12px', borderRadius: 8,
+                background: model === m.id ? 'rgba(139,92,246,0.12)' : 'transparent',
+                border: '1px solid transparent', cursor: 'pointer',
+                color: model === m.id ? 'var(--brand-accent)' : 'var(--text-secondary)',
+                textAlign: 'left', fontSize: '0.83rem',
+                transition: 'background 0.15s',
+              }}
+              onMouseOver={e => { if (model !== m.id) e.currentTarget.style.background = 'rgba(255,255,255,0.05)'; }}
+              onMouseOut={e => { if (model !== m.id) e.currentTarget.style.background = 'transparent'; }}
+            >
+              <span style={{ width: 10, height: 10, borderRadius: '50%', background: m.color, flexShrink: 0 }} />
+              <div>
+                <div style={{ fontWeight: 600 }}>{m.label}</div>
+                <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>{m.provider}</div>
+              </div>
+              {model === m.id && <Check size={14} style={{ marginLeft: 'auto' }} />}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
+// ─── ChatModule ───────────────────────────────────────────────────────────────
+
+const DEFAULT_PERMISSIONS = Object.fromEntries(
+  PERMISSION_CONFIGS.map(c => [c.key, c.default])
+);
+
+const WELCOME: ChatMessage = {
+  id: 'welcome',
+  role: 'assistant',
+  content: `Bonjour ! Je suis **Lia**, votre assistante IA ClawBoard. 👋
+
+Je peux gérer votre système directement depuis ce chat :
+• 📋 *"Liste mes tâches"* — voir toutes les tâches
+• ▶️ *"Démarre tsk_001"* — lancer une exécution
+• ➕ *"Crée une tâche nommée Mon Audit"* — créer une tâche
+• 🗑️ *"Supprime tsk_005"* — supprimer (si autorisé)
+• 📊 *"Montre-moi les modèles"* — voir les templates
+
+Sélectionnez votre modèle IA et configurez les permissions avec ⚙️`,
+  toolCalls: [],
+  ts: new Date(),
+};
+
+// ─── Conversation persistence ─────────────────────────────────────────────────
+
+interface Conversation {
+  id: string;
+  title: string;
+  messages: ChatMessage[];
+  model: string;
+  createdAt: string;
+}
+
+const STORAGE_KEY = 'clawboard-chat-history';
+const MAX_CONVS = 30;
+
+function loadConversations(): Conversation[] {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return [];
+    return JSON.parse(raw).map((c: Conversation) => ({
+      ...c,
+      messages: c.messages.map(m => ({ ...m, ts: new Date(m.ts) })),
+    }));
+  } catch { return []; }
+}
+
+function saveConversations(convs: Conversation[]) {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(convs.slice(0, MAX_CONVS)));
+}
+
+function convTitle(messages: ChatMessage[]): string {
+  const first = messages.find(m => m.role === 'user' && m.id !== 'welcome');
+  return first ? first.content.slice(0, 50) : 'Nouvelle conversation';
+}
+
+// ─── ConversationHistory ──────────────────────────────────────────────────────
+
+const ConversationHistory = ({
+  convs, currentId, onSelect, onDelete, onClose,
+}: {
+  convs: Conversation[];
+  currentId: string;
+  onSelect: (c: Conversation) => void;
+  onDelete: (id: string) => void;
+  onClose: () => void;
+}) => (
+  <div style={{
+    width: 240, background: 'var(--bg-surface)', borderRight: '1px solid var(--border-subtle)',
+    display: 'flex', flexDirection: 'column', flexShrink: 0,
+  }}>
+    <div style={{ padding: '14px 16px', borderBottom: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center', gap: 8 }}>
+      <History size={15} color="var(--brand-accent)" />
+      <span style={{ fontWeight: 700, fontSize: '0.9rem', flex: 1 }}>Historique</span>
+      <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: 4 }}>
+        <X size={15} />
+      </button>
+    </div>
+    <div style={{ flex: 1, overflowY: 'auto' }}>
+      {convs.length === 0 ? (
+        <div style={{ padding: '24px 16px', color: 'var(--text-muted)', fontSize: '0.82rem', textAlign: 'center' }}>
+          Aucune conversation sauvegardée
+        </div>
+      ) : convs.map(c => (
+        <div
+          key={c.id}
+          style={{
+            display: 'flex', alignItems: 'center', gap: 6, padding: '10px 12px',
+            background: c.id === currentId ? 'rgba(139,92,246,0.1)' : 'transparent',
+            borderLeft: c.id === currentId ? '3px solid var(--brand-accent)' : '3px solid transparent',
+            cursor: 'pointer', transition: 'background 0.15s',
+          }}
+          onClick={() => onSelect(c)}
+          onMouseOver={e => { if (c.id !== currentId) e.currentTarget.style.background = 'rgba(255,255,255,0.04)'; }}
+          onMouseOut={e => { if (c.id !== currentId) e.currentTarget.style.background = 'transparent'; }}
+        >
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {c.title}
+            </div>
+            <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: 2 }}>
+              {new Date(c.createdAt).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
+            </div>
+          </div>
+          <button
+            onClick={e => { e.stopPropagation(); onDelete(c.id); }}
+            style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: 4, opacity: 0.6, flexShrink: 0 }}
+            onMouseOver={e => { e.currentTarget.style.color = '#ef4444'; e.currentTarget.style.opacity = '1'; }}
+            onMouseOut={e => { e.currentTarget.style.color = 'var(--text-muted)'; e.currentTarget.style.opacity = '0.6'; }}
+          >
+            <Trash size={12} />
+          </button>
+        </div>
+      ))}
+    </div>
+  </div>
+);
+
+// ─── ChatModule ───────────────────────────────────────────────────────────────
+
+export const ChatModule = () => {
+  const [convId, setConvId]           = useState(() => uid());
+  const [conversations, setConvs]     = useState<Conversation[]>(loadConversations);
+  const [messages, setMessages]       = useState<ChatMessage[]>([WELCOME]);
+  const [input, setInput]             = useState('');
+  const [isLoading, setIsLoading]     = useState(false);
+  const [isThinking, setIsThinking]   = useState(false);
+  const [model, setModel]             = useState(() => localStorage.getItem('lia-model') || MODELS[0].id);
+  const [permissions, setPermissions] = useState<Record<string, boolean>>(() => {
+    try { return JSON.parse(localStorage.getItem('lia-permissions') || '{}'); }
+    catch { return {}; }
+  });
+  const [showPerms, setShowPerms]     = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
+  const [keySynced, setKeySynced]     = useState(false);
+  const [taskNotif, setTaskNotif]     = useState<string | null>(null);
+  const bottomRef                     = useRef<HTMLDivElement>(null);
+  const textareaRef                   = useRef<HTMLTextAreaElement>(null);
+  const navigate                      = useNavigate();
+  const prevTaskCountRef              = useRef<number | null>(null);
+
+  // ── Live task sync via SSE ──────────────────────────────────────────────────
+  const { data: liveTasks } = useSSE<{ id: string; name?: string; status: string }[] | null>('/api/tasks?stream=1', null);
+
+  useEffect(() => {
+    if (!liveTasks) return;
+    const count = liveTasks.length;
+    if (prevTaskCountRef.current === null) { prevTaskCountRef.current = count; return; }
+    if (count > prevTaskCountRef.current) {
+      const newTask = liveTasks[liveTasks.length - 1];
+      setTaskNotif(`✅ Tâche créée : ${newTask?.name || newTask?.id}`);
+    } else if (count < prevTaskCountRef.current) {
+      setTaskNotif(`🗑️ Tâche supprimée`);
+    } else {
+      // Status change on existing task
+      setTaskNotif(`🔄 Tâche mise à jour`);
+    }
+    prevTaskCountRef.current = count;
+    const t = setTimeout(() => setTaskNotif(null), 3500);
+    return () => clearTimeout(t);
+  }, [liveTasks]);
+
+  const { syncToBackend, configuredCount } = useApiKeys();
+
+  // ── Save conversation to localStorage when messages change ──────────────────
+  useEffect(() => {
+    const realMsgs = messages.filter(m => m.id !== 'welcome' && !m.isLoading);
+    if (realMsgs.length === 0) return;
+    const conv: Conversation = { id: convId, title: convTitle(messages), messages, model, createdAt: new Date().toISOString() };
+    setConvs(prev => {
+      const filtered = prev.filter(c => c.id !== convId);
+      const updated = [conv, ...filtered];
+      saveConversations(updated);
+      return updated;
+    });
+  }, [messages]);
+
+  // ── Start a new conversation ────────────────────────────────────────────────
+  const newChat = useCallback(() => {
+    setConvId(uid());
+    setMessages([WELCOME]);
+    setInput('');
+    setShowHistory(false);
+    textareaRef.current?.focus();
+  }, []);
+
+  // ── Load a past conversation ────────────────────────────────────────────────
+  const loadConversation = useCallback((c: Conversation) => {
+    setConvId(c.id);
+    setMessages(c.messages);
+    setModel(c.model);
+    setShowHistory(false);
+  }, []);
+
+  // ── Delete a conversation ───────────────────────────────────────────────────
+  const deleteConversation = useCallback((id: string) => {
+    setConvs(prev => {
+      const updated = prev.filter(c => c.id !== id);
+      saveConversations(updated);
+      return updated;
+    });
+    if (id === convId) newChat();
+  }, [convId, newChat]);
+
+  // ── Export current conversation as .md ─────────────────────────────────────
+  const exportChat = useCallback(() => {
+    const lines = [`# Conversation Lia — ${new Date().toLocaleDateString('fr-FR')}\n`];
+    messages.filter(m => m.id !== 'welcome').forEach(m => {
+      lines.push(`\n## ${m.role === 'user' ? 'Vous' : 'Lia'} (${m.ts.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })})\n`);
+      lines.push(m.content + '\n');
+    });
+    const blob = new Blob([lines.join('')], { type: 'text/markdown' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `lia-chat-${Date.now()}.md`; a.click();
+    URL.revokeObjectURL(url);
+  }, [messages]);
+
+  const effectivePerms = { ...DEFAULT_PERMISSIONS, ...permissions };
+
+  // Auto-sync API keys to backend on mount so Lia can use them immediately
+  useEffect(() => {
+    syncToBackend().then(ok => setKeySynced(ok));
+    // Read prefill from TaskDetailPanel "Ask Lia" button
+    const prefill = localStorage.getItem('lia-prefill');
+    if (prefill) {
+      localStorage.removeItem('lia-prefill');
+      setInput(prefill);
+      textareaRef.current?.focus();
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Persist model choice
+  useEffect(() => { localStorage.setItem('lia-model', model); }, [model]);
+
+  // Persist permissions
+  useEffect(() => { localStorage.setItem('lia-permissions', JSON.stringify(permissions)); }, [permissions]);
+
+  // Auto-scroll
+  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
+
+  const togglePerm = (key: string, val: boolean) => {
+    setPermissions(p => ({ ...p, [key]: val }));
+  };
+
+  const clearChat = () => newChat();
+
+  const sendMessage = useCallback(async () => {
+    const text = input.trim();
+    if (!text || isLoading) return;
+
+    setInput('');
+    textareaRef.current?.focus();
+
+    const userMsg: ChatMessage = { id: uid(), role: 'user', content: text, ts: new Date() };
+    const loadingMsg: ChatMessage = { id: uid(), role: 'assistant', content: '', ts: new Date(), isLoading: true };
+
+    setMessages(prev => [...prev, userMsg, loadingMsg]);
+    setIsLoading(true);
+    setIsThinking(true);
+
+    // Build conversation history for the API (exclude welcome + loading)
+    const history = [...messages.filter(m => m.id !== 'welcome'), userMsg].map(m => ({
+      role: m.role,
+      content: m.content,
+    }));
+
+    const assistantId = uid();
+
+    try {
+      const res = await apiFetch(`${BASE}/api/chat/stream`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messages: history, model, permissions: effectivePerms }),
+      });
+
+      if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+      let accumulated = '';
+      let toolCalls: ToolCall[] = [];
+
+      // Insert empty assistant message to stream into
+      setIsThinking(false);
+      setMessages(prev => [
+        ...prev.filter(m => !m.isLoading),
+        { id: assistantId, role: 'assistant', content: '', ts: new Date(), toolCalls: [] },
+      ]);
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split('\n');
+        buf = lines.pop() ?? '';
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          const raw = line.slice(6).trim();
+          try {
+            const evt = JSON.parse(raw);
+            if (evt.token) {
+              accumulated += evt.token;
+              setMessages(prev => prev.map(m =>
+                m.id === assistantId ? { ...m, content: accumulated } : m
+              ));
+            }
+            if (evt.done) {
+              toolCalls = evt.toolCalls || [];
+            }
+          } catch { /* skip */ }
+        }
+      }
+
+      // Finalize message with tool calls
+      setMessages(prev => prev.map(m =>
+        m.id === assistantId ? { ...m, content: accumulated, toolCalls } : m
+      ));
+    } catch (err) {
+      setMessages(prev => [
+        ...prev.filter(m => !m.isLoading && m.id !== assistantId),
+        {
+          id: assistantId,
+          role: 'assistant',
+          content: `❌ Erreur de connexion au serveur.\n\nVérifiez que le backend est démarré sur :4000.`,
+          toolCalls: [],
+          ts: new Date(),
+        },
+      ]);
+    } finally {
+      setIsLoading(false);
+      setIsThinking(false);
+    }
+  }, [input, isLoading, messages, model, effectivePerms]);
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+  };
+
+  const activeModel = MODELS.find(m => m.id === model) || MODELS[0];
+  const enabledCount = Object.values(effectivePerms).filter(Boolean).length;
+
+  return (
+    <div style={{ display: 'flex', height: '100%', minHeight: 0, overflow: 'hidden' }}>
+
+      {/* ── History panel ── */}
+      {showHistory && (
+        <ConversationHistory
+          convs={conversations}
+          currentId={convId}
+          onSelect={loadConversation}
+          onDelete={deleteConversation}
+          onClose={() => setShowHistory(false)}
+        />
+      )}
+
+      {/* ── Chat area ── */}
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+
+        {/* Header */}
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 12,
+          padding: '14px 20px', borderBottom: '1px solid var(--border-subtle)',
+          background: 'var(--bg-surface)', flexShrink: 0,
+        }}>
+          <div style={{
+            width: 38, height: 38, borderRadius: '50%',
+            background: 'linear-gradient(135deg, #1e1e2e, var(--brand-accent))',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            border: '2px solid rgba(255,255,255,0.1)',
+          }}>
+            <Bot size={18} color="var(--brand-accent)" />
+          </div>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontWeight: 700, fontSize: '1rem' }}>Lia</div>
+            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#10b981', display: 'inline-block' }} />
+              Assistante ClawBoard — {activeModel.provider}
+            </div>
+          </div>
+
+          <ModelSelector model={model} onChange={setModel} />
+
+          {/* API key status badge */}
+          {configuredCount > 0 && (
+            <div title={`${configuredCount} clé(s) API configurée(s)`} style={{
+              display: 'flex', alignItems: 'center', gap: 4,
+              background: keySynced ? 'rgba(16,185,129,0.1)' : 'rgba(245,158,11,0.1)',
+              border: `1px solid ${keySynced ? 'rgba(16,185,129,0.25)' : 'rgba(245,158,11,0.25)'}`,
+              borderRadius: 20, padding: '5px 10px',
+              fontSize: '0.75rem', color: keySynced ? '#10b981' : '#f59e0b',
+              fontWeight: 600,
+            }}>
+              <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'currentColor', display: 'inline-block' }} />
+              {configuredCount} clé{configuredCount > 1 ? 's' : ''}
+            </div>
+          )}
+
+          {/* Permissions button */}
+          <button
+            onClick={() => setShowPerms(o => !o)}
+            title="Gérer les autorisations"
+            style={{
+              display: 'flex', alignItems: 'center', gap: 6,
+              background: showPerms ? 'rgba(139,92,246,0.15)' : 'rgba(255,255,255,0.06)',
+              border: `1px solid ${showPerms ? 'rgba(139,92,246,0.35)' : 'var(--border-subtle)'}`,
+              borderRadius: 20, padding: '6px 12px', cursor: 'pointer',
+              color: showPerms ? 'var(--brand-accent)' : 'var(--text-secondary)',
+              fontSize: '0.8rem', fontWeight: 600, transition: 'all 0.2s',
+            }}
+          >
+            <Settings2 size={14} />
+            <span>{enabledCount}/{PERMISSION_CONFIGS.length}</span>
+          </button>
+
+          {/* History */}
+          <button
+            onClick={() => setShowHistory(o => !o)}
+            title="Historique des conversations"
+            style={{
+              background: showHistory ? 'rgba(139,92,246,0.15)' : 'rgba(255,255,255,0.05)',
+              border: `1px solid ${showHistory ? 'rgba(139,92,246,0.35)' : 'var(--border-subtle)'}`,
+              borderRadius: 8, padding: '7px', cursor: 'pointer',
+              color: showHistory ? 'var(--brand-accent)' : 'var(--text-muted)',
+              display: 'flex', transition: 'all 0.2s', position: 'relative',
+            }}
+          >
+            <History size={15} />
+            {conversations.length > 0 && (
+              <span style={{ position: 'absolute', top: -4, right: -4, background: 'var(--brand-accent)', color: 'white', borderRadius: '50%', width: 14, height: 14, fontSize: '0.6rem', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700 }}>
+                {conversations.length > 9 ? '9+' : conversations.length}
+              </span>
+            )}
+          </button>
+
+          {/* New chat */}
+          <button
+            onClick={newChat}
+            title="Nouvelle conversation"
+            style={{
+              background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border-subtle)',
+              borderRadius: 8, padding: '7px', cursor: 'pointer', color: 'var(--text-muted)',
+              display: 'flex', transition: 'all 0.2s',
+            }}
+            onMouseOver={e => { e.currentTarget.style.background = 'rgba(16,185,129,0.1)'; e.currentTarget.style.color = '#10b981'; }}
+            onMouseOut={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.05)'; e.currentTarget.style.color = 'var(--text-muted)'; }}
+          >
+            <PlusCircle size={15} />
+          </button>
+
+          {/* Export */}
+          {messages.filter(m => m.id !== 'welcome').length > 0 && (
+            <button
+              onClick={exportChat}
+              title="Exporter la conversation (.md)"
+              style={{
+                background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border-subtle)',
+                borderRadius: 8, padding: '7px', cursor: 'pointer', color: 'var(--text-muted)',
+                display: 'flex', transition: 'all 0.2s',
+              }}
+              onMouseOver={e => { e.currentTarget.style.background = 'rgba(59,130,246,0.1)'; e.currentTarget.style.color = '#3b82f6'; }}
+              onMouseOut={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.05)'; e.currentTarget.style.color = 'var(--text-muted)'; }}
+            >
+              <Download size={15} />
+            </button>
+          )}
+
+          {/* Clear */}
+          <button
+            onClick={clearChat}
+            title="Effacer la conversation"
+            style={{
+              background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border-subtle)',
+              borderRadius: 8, padding: '7px', cursor: 'pointer', color: 'var(--text-muted)',
+              display: 'flex', transition: 'all 0.2s',
+            }}
+            onMouseOver={e => { e.currentTarget.style.background = 'rgba(239,68,68,0.1)'; e.currentTarget.style.color = '#ef4444'; }}
+            onMouseOut={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.05)'; e.currentTarget.style.color = 'var(--text-muted)'; }}
+          >
+            <Trash2 size={15} />
+          </button>
+        </div>
+
+        {/* Messages */}
+        <div style={{
+          flex: 1, overflowY: 'auto', padding: '20px 20px 8px',
+          display: 'flex', flexDirection: 'column',
+        }}>
+          {/* Live task change notification */}
+          {taskNotif && (
+            <div style={{
+              alignSelf: 'center', background: 'rgba(139,92,246,0.12)', border: '1px solid rgba(139,92,246,0.25)',
+              borderRadius: 20, padding: '5px 14px', fontSize: '0.78rem', color: 'var(--brand-accent)',
+              marginBottom: 8, animation: 'fadeIn 0.3s ease',
+            }}>
+              {taskNotif} —{' '}
+              <span style={{ textDecoration: 'underline', cursor: 'pointer' }} onClick={() => navigate('/tasks')}>
+                Voir les tâches
+              </span>
+            </div>
+          )}
+          {messages.map(msg => <MessageBubble key={msg.id} msg={msg} onTaskClick={id => navigate(`/tasks/${id}`)} />)}
+          {/* Thinking indicator — shown before first token arrives */}
+          {isThinking && (
+            <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start', marginBottom: 16 }}>
+              <div style={{ width: 34, height: 34, borderRadius: '50%', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'linear-gradient(135deg, #1e1e2e, #2d2d3e)', border: '2px solid rgba(255,255,255,0.1)' }}>
+                <Bot size={16} color="var(--brand-accent)" />
+              </div>
+              <div style={{ background: 'var(--bg-glass)', border: '1px solid var(--border-subtle)', borderRadius: '18px 18px 18px 4px', padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginRight: 4 }}>Lia réfléchit</span>
+                {[0, 1, 2].map(i => (
+                  <div key={i} style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--brand-accent)', animation: `pulse 1.2s ${i * 0.2}s infinite` }} />
+                ))}
+              </div>
+            </div>
+          )}
+          <div ref={bottomRef} />
+        </div>
+
+        {/* Quick suggestions (shown only at start) */}
+        {messages.length <= 1 && (
+          <div style={{ padding: '0 20px 12px', display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {[
+              'Liste mes tâches',
+              'Montre les modèles',
+              'Crée une tâche nommée Test IA',
+              'Quelles récurrences sont actives ?',
+            ].map(s => (
+              <button
+                key={s}
+                onClick={() => { setInput(s); textareaRef.current?.focus(); }}
+                style={{
+                  padding: '6px 12px', borderRadius: 20, fontSize: '0.78rem',
+                  background: 'rgba(139,92,246,0.1)', border: '1px solid rgba(139,92,246,0.25)',
+                  color: 'var(--brand-accent)', cursor: 'pointer', transition: 'all 0.2s',
+                }}
+                onMouseOver={e => (e.currentTarget.style.background = 'rgba(139,92,246,0.2)')}
+                onMouseOut={e => (e.currentTarget.style.background = 'rgba(139,92,246,0.1)')}
+              >
+                {s}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* Input */}
+        <div style={{
+          padding: '12px 16px', borderTop: '1px solid var(--border-subtle)',
+          background: 'var(--bg-surface)', flexShrink: 0,
+        }}>
+          <div style={{
+            display: 'flex', gap: 10, alignItems: 'flex-end',
+            background: 'var(--bg-glass)', border: '1px solid var(--border-subtle)',
+            borderRadius: 14, padding: '8px 8px 8px 14px',
+            transition: 'border-color 0.2s',
+          }}>
+            <textarea
+              ref={textareaRef}
+              value={input}
+              onChange={e => setInput(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder="Écrivez un message… (Entrée pour envoyer, Shift+Entrée pour saut de ligne)"
+              rows={1}
+              style={{
+                flex: 1, background: 'transparent', border: 'none', outline: 'none',
+                resize: 'none', color: 'var(--text-primary)', fontSize: '0.9rem',
+                lineHeight: 1.55, fontFamily: 'inherit', padding: 0, maxHeight: 120, overflowY: 'auto',
+              }}
+              onInput={e => {
+                const el = e.currentTarget;
+                el.style.height = 'auto';
+                el.style.height = Math.min(el.scrollHeight, 120) + 'px';
+              }}
+            />
+            <button
+              onClick={sendMessage}
+              disabled={!input.trim() || isLoading}
+              style={{
+                width: 36, height: 36, borderRadius: 10, flexShrink: 0,
+                background: input.trim() && !isLoading
+                  ? 'linear-gradient(135deg, var(--brand-primary), var(--brand-accent))'
+                  : 'rgba(255,255,255,0.08)',
+                border: 'none', cursor: input.trim() && !isLoading ? 'pointer' : 'not-allowed',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                transition: 'all 0.2s', color: 'white',
+              }}
+            >
+              <Send size={15} />
+            </button>
+          </div>
+          <div style={{ marginTop: 6, fontSize: '0.7rem', color: 'var(--text-muted)', textAlign: 'center' }}>
+            Modèle : <strong style={{ color: activeModel.color }}>{activeModel.label}</strong>
+            {' · '}
+            {enabledCount} permission{enabledCount > 1 ? 's' : ''} active{enabledCount > 1 ? 's' : ''}
+          </div>
+        </div>
+      </div>
+
+      {/* ── Permissions panel ── */}
+      {showPerms && (
+        <PermissionsPanel
+          permissions={effectivePerms}
+          onChange={togglePerm}
+          onClose={() => setShowPerms(false)}
+        />
+      )}
+
+      <style>{`
+        @keyframes pulse {
+          0%, 100% { opacity: 0.3; transform: scale(0.8); }
+          50% { opacity: 1; transform: scale(1.2); }
+        }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
+      `}</style>
+    </div>
+  );
+};
