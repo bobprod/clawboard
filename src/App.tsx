@@ -11,6 +11,7 @@ import { SettingsModule } from './components/SettingsModule';
 import { SchedulerModule } from './components/SchedulerModule';
 import { ChatModule } from './components/ChatModule';
 import { TerminalModule } from './components/TerminalModule';
+import { GitLogModule } from './components/GitLogModule';
 import { Dropdown } from './components/Dropdown';
 import { TourGuide, resetTour } from './components/TourGuide';
 import { useSSE } from './hooks/useSSE';
@@ -29,6 +30,7 @@ import {
   MessageSquare,
   MapIcon,
   Terminal,
+  GitBranch,
 } from 'lucide-react';
 import './index.css';
 
@@ -140,6 +142,7 @@ const PageContent = () => {
         <Route path="/memory" element={<MemoryModule />} />
         <Route path="/skills" element={<SkillsModule />} />
         <Route path="/terminal" element={<div className="glass-panel p-0" style={{ height: 'calc(100vh - 120px)' }}><TerminalModule /></div>} />
+        <Route path="/gitlog" element={<GitLogModule />} />
         <Route path="/settings" element={<SettingsModule />} />
       </Routes>
     </div>
@@ -175,6 +178,7 @@ const Sidebar = () => (
       <NavLink to="/memory" icon={BrainCircuit} tourId="nav-memory">Mémoire (QMD)</NavLink>
       <NavLink to="/skills" icon={ToyBrick}>Tâches & Skills</NavLink>
       <NavLink to="/terminal" icon={Terminal}>Terminal</NavLink>
+      <NavLink to="/gitlog" icon={GitBranch}>Git Log</NavLink>
     </ul>
     <div className="sidebar-footer">
       <NavLink to="/settings" icon={Settings} tourId="nav-settings">Paramètres</NavLink>

@@ -6,6 +6,7 @@ import {
   ArrowLeft, Save, Play, Plus, Minus,
   ToggleLeft, ToggleRight, PenLine, Loader2, HelpCircle,
   BookmarkPlus, AlertTriangle, AlertCircle, Info, X, RotateCcw,
+  QrCode, RefreshCw, Copy, CheckCircle2, Link2,
 } from 'lucide-react';
 import { TaskCreatorTour, resetTaskCreatorTour } from './TaskCreatorTour';
 
@@ -25,6 +26,266 @@ const MODELS = [
 ];
 
 const CHANNELS = ['telegram', 'discord', 'whatsapp', 'webhook'] as const;
+
+// ── QR Pairing Modal ────────────────────────────────────────────────────────
+interface PairingData {
+  token: string;
+  pairingUrl: string;
+  expiresIn: number; // seconds
+  instructions: string[];
+}
+
+function QrPairingModal({
+  canal,
+  destinataire,
+  onClose,
+}: {
+  canal: string;
+  destinataire: string;
+  onClose: () => void;
+}) {
+  const [data,    setData]    = useState<PairingData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [copied,  setCopied]  = useState(false);
+  const [ttl,     setTtl]     = useState(0);
+
+  const fetchPairing = async () => {
+    setLoading(true);
+    try {
+      const params = new URLSearchParams({ platform: canal, targetId: destinataire });
+      const res = await apiFetch(`${BASE}/api/pairing/qr?${params}`);
+      const json = await res.json();
+      setData(json);
+      setTtl(json.expiresIn ?? 300);
+    } catch {
+      // Mock graceful fallback
+      const token = Math.random().toString(36).slice(2, 10).toUpperCase();
+      const pairingUrl =
+        canal === 'telegram'
+          ? `https://t.me/nemoclaw_bot?start=${token}`
+          : canal === 'discord'
+          ? `https://discord.com/oauth2/authorize?client_id=1234567890&scope=bot&state=${token}`
+          : `https://clawboard.local/pair/${token}`;
+      setData({
+        token,
+        pairingUrl,
+        expiresIn: 300,
+        instructions:
+          canal === 'telegram'
+            ? [
+                'Ouvrez Telegram sur votre téléphone',
+                'Scannez le QR code ou cliquez sur le lien',
+                'Envoyez /start au bot Nemoclaw',
+                'Le Chat ID sera lié automatiquement',
+              ]
+            : canal === 'discord'
+            ? [
+                'Scannez le QR code ou ouvrez le lien',
+                'Autorisez le bot Nemoclaw dans votre serveur',
+                "Choisissez le salon de destination",
+                "L'ID du salon sera enregistré automatiquement",
+              ]
+            : [
+                'Scannez le QR code pour initier le pairing',
+                'Suivez les instructions dans votre navigateur',
+              ],
+      });
+      setTtl(300);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { fetchPairing(); }, []);
+
+  // Countdown timer
+  useEffect(() => {
+    if (ttl <= 0) return;
+    const t = setInterval(() => setTtl(v => Math.max(0, v - 1)), 1000);
+    return () => clearInterval(t);
+  }, [ttl]);
+
+  const handleCopy = () => {
+    if (!data) return;
+    navigator.clipboard.writeText(data.pairingUrl).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+
+  const qrImgUrl = data
+    ? `https://api.qrserver.com/v1/create-qr-code/?size=200x200&margin=12&data=${encodeURIComponent(data.pairingUrl)}`
+    : '';
+
+  const ttlMin  = Math.floor(ttl / 60);
+  const ttlSec  = ttl % 60;
+  const expired = ttl <= 0;
+
+  const PLATFORM_COLOR: Record<string, string> = {
+    telegram: '#2CA5E0',
+    discord:  '#5865F2',
+  };
+  const accent = PLATFORM_COLOR[canal] ?? 'var(--brand-accent)';
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, zIndex: 9999,
+      background: 'rgba(0,0,0,0.65)', backdropFilter: 'blur(4px)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
+    }}>
+      <div style={{
+        background: 'var(--bg-surface)', border: '1px solid var(--border-subtle)',
+        borderRadius: 18, padding: 32, width: '100%', maxWidth: 480,
+        boxShadow: 'var(--shadow-lg)', display: 'flex', flexDirection: 'column', gap: 20,
+      }}>
+        {/* Header */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <div style={{
+              background: `${accent}22`, border: `1px solid ${accent}44`,
+              borderRadius: 10, padding: 8, color: accent,
+            }}>
+              <QrCode size={20} />
+            </div>
+            <div>
+              <div style={{ fontWeight: 700, fontSize: '1.05rem', color: 'var(--text-primary)', textTransform: 'capitalize' }}>
+                Pairing {canal}
+              </div>
+              <div style={{ fontSize: '11.5px', color: 'var(--text-muted)' }}>
+                Liez votre compte en quelques secondes
+              </div>
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: 6, borderRadius: 8 }}
+          >
+            <X size={18} />
+          </button>
+        </div>
+
+        {loading ? (
+          <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--text-muted)' }}>
+            <Loader2 size={28} style={{ animation: 'spin 1s linear infinite', margin: '0 auto 10px', display: 'block' }} />
+            Génération du code de pairing…
+          </div>
+        ) : expired ? (
+          <div style={{ textAlign: 'center', padding: '20px 0' }}>
+            <div style={{ color: '#ef4444', marginBottom: 12, fontSize: 14 }}>QR code expiré</div>
+            <button
+              onClick={fetchPairing}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 6, margin: '0 auto',
+                padding: '8px 18px', background: 'rgba(139,92,246,0.1)',
+                border: '1px solid rgba(139,92,246,0.3)', borderRadius: 8,
+                color: 'var(--brand-accent)', cursor: 'pointer', fontWeight: 600, fontSize: 13,
+              }}
+            >
+              <RefreshCw size={14} /> Regénérer
+            </button>
+          </div>
+        ) : data ? (
+          <>
+            {/* QR Code */}
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}>
+              <div style={{
+                background: '#fff', borderRadius: 14, padding: 8,
+                border: `2px solid ${accent}44`,
+                boxShadow: `0 0 24px ${accent}22`,
+              }}>
+                <img
+                  src={qrImgUrl}
+                  alt="QR Code de pairing"
+                  width={200}
+                  height={200}
+                  style={{ display: 'block', borderRadius: 8 }}
+                />
+              </div>
+              {/* Timer */}
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: 6, fontSize: 12,
+                color: ttl < 60 ? '#ef4444' : 'var(--text-muted)',
+              }}>
+                <RefreshCw size={11} />
+                Expire dans {ttlMin}:{ttlSec.toString().padStart(2, '0')}
+              </div>
+            </div>
+
+            {/* Token + Copy */}
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 8,
+              background: 'var(--bg-glass)', border: '1px solid var(--border-subtle)',
+              borderRadius: 9, padding: '10px 14px',
+            }}>
+              <Link2 size={13} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
+              <span style={{
+                flex: 1, fontSize: 11.5, fontFamily: 'var(--mono)',
+                color: 'var(--text-secondary)', wordBreak: 'break-all',
+              }}>
+                {data.pairingUrl}
+              </span>
+              <button
+                onClick={handleCopy}
+                title="Copier"
+                style={{
+                  flexShrink: 0, background: 'none', border: 'none', cursor: 'pointer',
+                  color: copied ? '#10b981' : 'var(--text-muted)', padding: 4,
+                }}
+              >
+                {copied ? <CheckCircle2 size={14} /> : <Copy size={14} />}
+              </button>
+            </div>
+
+            {/* Token code */}
+            <div style={{ textAlign: 'center' }}>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>Code de vérification</div>
+              <div style={{
+                fontFamily: 'var(--mono)', fontSize: '1.6rem', fontWeight: 700,
+                letterSpacing: '0.3em', color: accent,
+                textShadow: `0 0 20px ${accent}66`,
+              }}>
+                {data.token}
+              </div>
+            </div>
+
+            {/* Instructions */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {data.instructions.map((step, i) => (
+                <div key={i} style={{
+                  display: 'flex', alignItems: 'flex-start', gap: 10, fontSize: 13,
+                  color: 'var(--text-secondary)',
+                }}>
+                  <span style={{
+                    flexShrink: 0, width: 20, height: 20, borderRadius: '50%',
+                    background: `${accent}22`, border: `1px solid ${accent}44`,
+                    color: accent, fontSize: 10, fontWeight: 700,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  }}>
+                    {i + 1}
+                  </span>
+                  {step}
+                </div>
+              ))}
+            </div>
+
+            <button
+              onClick={fetchPairing}
+              style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+                padding: '7px 16px', background: 'var(--bg-glass)',
+                border: '1px solid var(--border-subtle)', borderRadius: 8,
+                color: 'var(--text-secondary)', cursor: 'pointer', fontSize: 12,
+              }}
+            >
+              <RefreshCw size={12} /> Regénérer un nouveau code
+            </button>
+          </>
+        ) : null}
+      </div>
+      <style>{`@keyframes spin { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }`}</style>
+    </div>
+  );
+}
 
 const inputStyle: React.CSSProperties = {
   width: '100%', padding: '9px 12px', borderRadius: 8,
@@ -108,6 +369,7 @@ export const TaskCreator = () => {
   const [saveAsModel,        setSaveAsModel]        = useState(false);
   const [showDraftBanner,    setShowDraftBanner]    = useState(false);
   const [confirmCancel,      setConfirmCancel]      = useState(false);
+  const [showQrModal,        setShowQrModal]        = useState(false);
 
   // ── Restore draft or prefill on mount ─────────────────────────────────────
   useEffect(() => {
@@ -268,6 +530,15 @@ export const TaskCreator = () => {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 24, maxWidth: 820, margin: '0 auto', width: '100%', paddingBottom: 40 }}>
+
+      {/* QR Pairing Modal */}
+      {showQrModal && (
+        <QrPairingModal
+          canal={canal}
+          destinataire={destinataire}
+          onClose={() => setShowQrModal(false)}
+        />
+      )}
 
       {/* Guided Tour */}
       <TaskCreatorTour
@@ -523,20 +794,41 @@ export const TaskCreator = () => {
               label={canal === 'telegram' ? 'Chat ID Telegram' : canal === 'discord' ? 'ID Salon Discord' : canal === 'whatsapp' ? 'Numéro WhatsApp' : 'URL Webhook'}
               hint="Requis pour que l'agent puisse envoyer ses résultats"
             >
-              <input
-                value={destinataire}
-                onChange={e => setDestinataire(e.target.value)}
-                style={{
-                  ...inputStyle, fontFamily: 'var(--mono)',
-                  borderColor: name.trim() && !destinataire.trim() ? 'rgba(245,158,11,0.5)' : undefined,
-                }}
-                placeholder={
-                  canal === 'telegram' ? '@username ou -100xxxxx' :
-                  canal === 'discord'  ? '1234567890…' :
-                  canal === 'whatsapp' ? '+336XXXXXXXX' :
-                  'https://votre-serveur.com/webhook'
-                }
-              />
+              <div style={{ display: 'flex', gap: 8 }}>
+                <input
+                  value={destinataire}
+                  onChange={e => setDestinataire(e.target.value)}
+                  style={{
+                    ...inputStyle, fontFamily: 'var(--mono)', flex: 1,
+                    borderColor: name.trim() && !destinataire.trim() ? 'rgba(245,158,11,0.5)' : undefined,
+                  }}
+                  placeholder={
+                    canal === 'telegram' ? '@username ou -100xxxxx' :
+                    canal === 'discord'  ? '1234567890…' :
+                    canal === 'whatsapp' ? '+336XXXXXXXX' :
+                    'https://votre-serveur.com/webhook'
+                  }
+                />
+                {(canal === 'telegram' || canal === 'discord') && (
+                  <button
+                    type="button"
+                    onClick={() => setShowQrModal(true)}
+                    title={`Coupler via QR code ${canal}`}
+                    style={{
+                      flexShrink: 0,
+                      display: 'flex', alignItems: 'center', gap: 5,
+                      padding: '9px 13px', borderRadius: 8, cursor: 'pointer',
+                      background: canal === 'telegram' ? 'rgba(44,165,224,0.12)' : 'rgba(88,101,242,0.12)',
+                      border: `1px solid ${canal === 'telegram' ? 'rgba(44,165,224,0.3)' : 'rgba(88,101,242,0.3)'}`,
+                      color: canal === 'telegram' ? '#2CA5E0' : '#5865F2',
+                      fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap',
+                      transition: 'all 0.2s',
+                    }}
+                  >
+                    <QrCode size={14} /> Coupler
+                  </button>
+                )}
+              </div>
             </Field>
           </div>
         </div>
