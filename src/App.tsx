@@ -1,19 +1,21 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, Suspense, lazy } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link, useLocation, useNavigate } from 'react-router-dom';
-import { Dashboard } from './components/Dashboard';
-import { TaskCreator } from './components/TaskCreator';
-import { TachesPage } from './components/TachesPage';
-import { SecurityModule } from './components/SecurityModule';
-import { CollaborationModule } from './components/CollaborationModule';
-import { MemoryModule } from './components/MemoryModule';
-import { SkillsModule } from './components/SkillsModule';
-import { SettingsModule } from './components/SettingsModule';
-import { SchedulerModule } from './components/SchedulerModule';
-import { ChatModule } from './components/ChatModule';
-import { TerminalModule } from './components/TerminalModule';
-import { GitLogModule } from './components/GitLogModule';
 import { Dropdown } from './components/Dropdown';
 import { TourGuide, resetTour } from './components/TourGuide';
+
+// Route-level code splitting — loaded on demand
+const Dashboard           = lazy(() => import('./components/Dashboard').then(m => ({ default: m.Dashboard })));
+const TaskCreator         = lazy(() => import('./components/TaskCreator').then(m => ({ default: m.TaskCreator })));
+const TachesPage          = lazy(() => import('./components/TachesPage').then(m => ({ default: m.TachesPage })));
+const SecurityModule      = lazy(() => import('./components/SecurityModule').then(m => ({ default: m.SecurityModule })));
+const CollaborationModule = lazy(() => import('./components/CollaborationModule').then(m => ({ default: m.CollaborationModule })));
+const MemoryModule        = lazy(() => import('./components/MemoryModule').then(m => ({ default: m.MemoryModule })));
+const SkillsModule        = lazy(() => import('./components/SkillsModule').then(m => ({ default: m.SkillsModule })));
+const SettingsModule      = lazy(() => import('./components/SettingsModule').then(m => ({ default: m.SettingsModule })));
+const SchedulerModule     = lazy(() => import('./components/SchedulerModule').then(m => ({ default: m.SchedulerModule })));
+const ChatModule          = lazy(() => import('./components/ChatModule').then(m => ({ default: m.ChatModule })));
+const TerminalModule      = lazy(() => import('./components/TerminalModule').then(m => ({ default: m.TerminalModule })));
+const GitLogModule        = lazy(() => import('./components/GitLogModule').then(m => ({ default: m.GitLogModule })));
 import { useSSE } from './hooks/useSSE';
 import {
   TerminalSquare,
@@ -130,21 +132,23 @@ const PageContent = () => {
   const isChat = location.pathname === '/chat';
   return (
     <div className={`page-content${isChat ? ' chat-page' : ''}`}>
-      <Routes>
-        <Route path="/" element={<Dashboard />} />
-        <Route path="/tasks" element={<TachesPage />} />
-        <Route path="/tasks/new" element={<TaskCreator />} />
-        <Route path="/tasks/:taskId" element={<TachesPage />} />
-        <Route path="/chat" element={<ChatModule />} />
-        <Route path="/scheduler" element={<SchedulerModule />} />
-        <Route path="/security" element={<SecurityModule />} />
-        <Route path="/collaborations" element={<CollaborationModule />} />
-        <Route path="/memory" element={<MemoryModule />} />
-        <Route path="/skills" element={<SkillsModule />} />
-        <Route path="/terminal" element={<div className="glass-panel p-0" style={{ height: 'calc(100vh - 120px)' }}><TerminalModule /></div>} />
-        <Route path="/gitlog" element={<GitLogModule />} />
-        <Route path="/settings" element={<SettingsModule />} />
-      </Routes>
+      <Suspense fallback={<div style={{ padding: '2rem', color: 'var(--text-secondary)' }}>Chargement…</div>}>
+        <Routes>
+          <Route path="/" element={<Dashboard />} />
+          <Route path="/tasks" element={<TachesPage />} />
+          <Route path="/tasks/new" element={<TaskCreator />} />
+          <Route path="/tasks/:taskId" element={<TachesPage />} />
+          <Route path="/chat" element={<ChatModule />} />
+          <Route path="/scheduler" element={<SchedulerModule />} />
+          <Route path="/security" element={<SecurityModule />} />
+          <Route path="/collaborations" element={<CollaborationModule />} />
+          <Route path="/memory" element={<MemoryModule />} />
+          <Route path="/skills" element={<SkillsModule />} />
+          <Route path="/terminal" element={<div className="glass-panel p-0" style={{ height: 'calc(100vh - 120px)' }}><TerminalModule /></div>} />
+          <Route path="/gitlog" element={<GitLogModule />} />
+          <Route path="/settings" element={<SettingsModule />} />
+        </Routes>
+      </Suspense>
     </div>
   );
 };
