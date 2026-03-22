@@ -168,8 +168,8 @@ export const GitLogModule = () => {
   }, []);
 
   useEffect(() => {
-    const cur = branches.find(b => b.current)?.name ?? activeBranch ?? 'main';
-    fetchAll(cur, limit);
+    fetchAll('', 50);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleBranchChange = (br: string) => {

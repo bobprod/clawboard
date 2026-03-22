@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { AlertTriangle, AlertCircle, Info, X, Bell, BellOff, Settings } from 'lucide-react';
+import { AlertTriangle, AlertCircle, X, Bell, BellOff, Settings } from 'lucide-react';
 import { apiFetch } from '../lib/apiFetch';
 
 const BASE = 'http://localhost:4000';

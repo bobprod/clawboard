@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Search, X, Code, ToggleRight, ToggleLeft, ToyBrick, ExternalLink, Check, Zap } from 'lucide-react';
+import { Search, X, Code, ToyBrick, ExternalLink, Check, Zap } from 'lucide-react';
 import { apiFetch } from '../lib/apiFetch';
 
 const BASE = 'http://localhost:4000';

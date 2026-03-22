@@ -96,7 +96,7 @@ function QrPairingModal({
     }
   };
 
-  useEffect(() => { fetchPairing(); }, []);
+  useEffect(() => { fetchPairing(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Countdown timer
   useEffect(() => {
@@ -409,8 +409,8 @@ export const TaskCreator = () => {
         if (draft.disablePreInstructions !== undefined) setDisablePreInstructions(draft.disablePreInstructions);
         setShowDraftBanner(true);
       }
-    } catch (_) {}
-  }, []);
+    } catch { /* draft parse error — ignore */ }
+  }, [prefill]); // prefill is stable (from location.state) — initialized guard prevents re-runs
 
   // ── Auto-save draft ────────────────────────────────────────────────────────
   useEffect(() => {
@@ -461,7 +461,7 @@ export const TaskCreator = () => {
       });
       const data = await res.json();
       if (data.enhanced) setInstructions(data.enhanced);
-    } catch (_) {}
+    } catch { /* enhance failed — ignore */ }
     setEnhancing(false);
   };
 
@@ -502,7 +502,7 @@ export const TaskCreator = () => {
               objectives: cleanObjectives, disablePreInstructions,
             }),
           });
-        } catch (_) { /* non-blocking */ }
+        } catch { /* save-as-model non-blocking */ }
       }
 
       if (andRun && created?.id) {
@@ -512,8 +512,8 @@ export const TaskCreator = () => {
       // Clear draft on success
       localStorage.removeItem(DRAFT_KEY);
       navigate(created?.id ? `/tasks/${created.id}` : '/tasks');
-    } catch (e: any) {
-      setSaveError(e.message);
+    } catch (err: unknown) {
+      setSaveError(err instanceof Error ? err.message : 'Erreur inconnue');
       setSaving(false);
     }
   };

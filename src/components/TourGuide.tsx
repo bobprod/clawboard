@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import Joyride, { STATUS, EVENTS } from 'react-joyride';
 import type { CallBackProps, Step } from 'react-joyride';
 
@@ -173,7 +173,7 @@ export const TourGuide = ({ run: runProp, onFinish }: TourGuideProps) => {
   }, [runProp]);
 
   const handleCallback = useCallback((data: CallBackProps) => {
-    const { status, type, index, action } = data;
+    const { status, type, action } = data;
 
     if (type === EVENTS.STEP_AFTER || type === EVENTS.TARGET_NOT_FOUND) {
       setStepIndex(i => action === 'prev' ? Math.max(0, i - 1) : i + 1);
