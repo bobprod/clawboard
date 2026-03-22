@@ -1,9 +1,14 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { mockAgents } from '../data/mockData';
 import type { Task } from '../data/mockData';
 import { useSSE } from '../hooks/useSSE';
 import { api } from '../hooks/useApi';
+import { apiFetch } from '../lib/apiFetch';
+
+const BASE = 'http://localhost:4000';
+
+interface Agent { id: string; name: string; }
 import { Play, CheckCircle2, AlertTriangle, Clock, Plus, Zap, GripVertical, MoreVertical, Copy, PauseCircle, Trash2, Eye } from 'lucide-react';
 import { Dropdown } from './Dropdown';
 
@@ -27,6 +32,16 @@ export const TasksKanban = () => {
   const [filterAgent, setFilterAgent]   = useState<string>('all');
   const [dragTaskId, setDragTaskId]     = useState<string | null>(null);
   const [dropTarget, setDropTarget]     = useState<string | null>(null);
+  const [agents, setAgents]             = useState<Agent[]>(mockAgents);
+
+  useEffect(() => {
+    apiFetch(`${BASE}/api/agents`)
+      .then(r => r.json())
+      .then((data: Agent[]) => {
+        if (Array.isArray(data) && data.length > 0) setAgents(data);
+      })
+      .catch(() => {}); // graceful fallback: keep mockAgents
+  }, []);
 
   const { data: liveTasks } = useSSE<Task[] | null>('/api/tasks?stream=1', null);
   const [localTasks, setLocalTasks]     = useState<Task[] | null>(null);
@@ -104,8 +119,8 @@ export const TasksKanban = () => {
         <div style={{ display: 'flex', gap: '16px', alignItems: 'center' }}>
           {/* Agent Filters */}
           <div style={{ display: 'flex', gap: '6px', background: 'rgba(0,0,0,0.2)', padding: '6px', borderRadius: 'var(--radius-full)', border: '1px solid var(--border-subtle)' }}>
-            {['all', ...mockAgents.map(a => a.id)].map(id => {
-              const label = id === 'all' ? 'Tous' : mockAgents.find(a => a.id === id)?.name || id;
+            {['all', ...agents.map(a => a.id)].map(id => {
+              const label = id === 'all' ? 'Tous' : agents.find(a => a.id === id)?.name || id;
               const active = filterAgent === id;
               return (
                 <button key={id} onClick={() => setFilterAgent(id)} style={{
