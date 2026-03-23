@@ -5,6 +5,7 @@ import { TaskCreator } from './components/TaskCreator';
 import { TachesPage } from './components/TachesPage';
 import { SecurityModule } from './components/SecurityModule';
 import { CollaborationModule } from './components/CollaborationModule';
+import { AgentsHierarchyModule } from './components/AgentsHierarchyModule';
 import { MemoryModule } from './components/MemoryModule';
 import { SkillsModule } from './components/SkillsModule';
 import { SettingsModule } from './components/SettingsModule';
@@ -137,6 +138,7 @@ const PageContent = () => {
         <Route path="/scheduler" element={<SchedulerModule />} />
         <Route path="/security" element={<SecurityModule />} />
         <Route path="/collaborations" element={<CollaborationModule />} />
+        <Route path="/agents" element={<AgentsHierarchyModule />} />
         <Route path="/memory" element={<MemoryModule />} />
         <Route path="/skills" element={<SkillsModule />} />
         <Route path="/terminal" element={<div className="glass-panel p-0" style={{ height: 'calc(100vh - 120px)' }}><TerminalModule /></div>} />
@@ -172,6 +174,7 @@ const Sidebar = () => (
       <NavLink to="/scheduler" icon={CalendarClock} tourId="nav-scheduler">Planificateur</NavLink>
       <NavLink to="/security" icon={ShieldCheck} tourId="nav-security">Sécurité & Scan</NavLink>
       <NavLink to="/collaborations" icon={Network} tourId="nav-collaborations">Collaborations</NavLink>
+      <NavLink to="/agents" icon={Network} tourId="nav-agents">Agents Hierarchy</NavLink>
       <NavLink to="/memory" icon={BrainCircuit} tourId="nav-memory">Mémoire (QMD)</NavLink>
       <NavLink to="/skills" icon={ToyBrick}>Tâches & Skills</NavLink>
       <NavLink to="/terminal" icon={Terminal}>Terminal</NavLink>

@@ -28,7 +28,7 @@ const BUILTINS: Record<string, (args: string[]) => string> = {
     '  status             Statut du gateway',
     '  tasks              Lister les tâches actives',
     '  run <task-id>      Rejouer une tâche',
-    '  logs <task-id>     Afficher les logs d'une tâche',
+    '  logs <task-id>     Afficher les logs d\'une tâche',
     '  health             Vérifier la santé du système',
     '  echo <texte>       Répéter le texte',
     '  date               Date et heure actuelles',
