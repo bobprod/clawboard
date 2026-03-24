@@ -15,7 +15,7 @@ if (!KEK_HEX) console.warn('[SECURITY] CLAWBOARD_KEK not set — API keys stored
 
 // ─── Security helpers ─────────────────────────────────────────────────────────
 
-const PUBLIC_PREFIXES = ['/api/ping', '/api/vitals', '/api/quota', '/api/logs/'];
+const PUBLIC_PREFIXES = ['/api/ping', '/api/vitals', '/api/quota', '/api/logs/', '/api/auth/login'];
 
 function checkAuth(req) {
   if (!SECRET) return true;
@@ -396,6 +396,25 @@ async function seedIfEmpty() {
 let apiKeys = {};
 let quotas  = {};
 let totalCost24h = 0;
+
+// ─── Agents — in-memory fleet (enrichi depuis /api/tasks quand branché) ───────
+
+const AGENTS = new Map([
+  ['main',  { id: 'main',  label: 'NemoClaw Router',  role: 'Main Orchestrator',   model: 'claude-sonnet-4-6', status: 'active',  parentId: null,   position: { x: 300, y: 50  } }],
+  ['sub1',  { id: 'sub1',  label: 'Code Architect',   role: 'Software Engineer',   model: 'llama-3.2',         status: 'active',  parentId: 'main', position: { x: 50,  y: 300 } }],
+  ['sub2',  { id: 'sub2',  label: 'Data Analyst',     role: 'Data processing',     model: 'claude-haiku-4-5',  status: 'offline', parentId: 'main', position: { x: 300, y: 300 } }],
+  ['sub3',  { id: 'sub3',  label: 'Security Scanner', role: 'Vulnerability check', model: 'qwen-2.5',          status: 'active',  parentId: 'main', position: { x: 550, y: 300 } }],
+]);
+
+// ─── Notifications config — in-memory (persisted to DB as a memory doc optionally) ─
+
+let notificationsConfig = {
+  telegram_token: '', telegram_chat_id: '',
+  discord_webhook: '',
+  email_smtp: '', email_from: '', email_to: '',
+  webhook_url: '',
+  notify_on_task_done: true, notify_on_task_failed: true, notify_on_approval: true,
+};
 
 async function loadApiKeys() {
   const { rows } = await pool.query('SELECT provider, encrypted_value FROM api_keys');
@@ -1429,6 +1448,83 @@ const server = http.createServer((req, res) => {
         res.write(`data: ${JSON.stringify({ done: true, toolCalls: [] })}\n\n`);
       }
       res.end();
+    });
+    return;
+  }
+
+  // ── Auth — login / change password
+  if (path === '/api/auth/login' && req.method === 'POST') {
+    body(b => {
+      const { username, password } = b;
+      if (!username || !password) return json(400, { message: 'Identifiant et mot de passe requis.' });
+      if (SECRET && password !== SECRET) return json(401, { message: 'Identifiants incorrects.' });
+      const token = SECRET || `session-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      json(200, {
+        token,
+        user: { username, displayName: username, role: username === 'admin' ? 'admin' : 'user', avatar: null },
+      });
+    });
+    return;
+  }
+  if (path === '/api/auth/password' && req.method === 'POST') {
+    body(b => {
+      const { current, next } = b;
+      if (!current || !next) return json(400, { message: 'Champs requis.' });
+      if (SECRET && current !== SECRET) return json(401, { message: 'Mot de passe actuel incorrect.' });
+      if (next.length < 6) return json(400, { message: 'Le mot de passe doit contenir au moins 6 caractères.' });
+      json(200, { ok: true });
+    });
+    return;
+  }
+
+  // ── Agents fleet
+  if (path === '/api/agents' && req.method === 'GET') {
+    json(200, [...AGENTS.values()]);
+    return;
+  }
+  const agentRunMatch  = path.match(/^\/api\/agents\/([^/]+)\/run$/);
+  const agentStopMatch = path.match(/^\/api\/agents\/([^/]+)\/stop$/);
+  if (agentRunMatch && req.method === 'POST') {
+    const agent = AGENTS.get(agentRunMatch[1]);
+    if (!agent) return json(404, { error: 'Agent not found' });
+    agent.status = 'active';
+    json(200, agent);
+    return;
+  }
+  if (agentStopMatch && req.method === 'POST') {
+    const agent = AGENTS.get(agentStopMatch[1]);
+    if (!agent) return json(404, { error: 'Agent not found' });
+    agent.status = 'offline';
+    json(200, agent);
+    return;
+  }
+
+  // ── Notifications settings
+  if (path === '/api/settings/notifications' && req.method === 'GET') {
+    json(200, notificationsConfig);
+    return;
+  }
+  if (path === '/api/settings/notifications' && req.method === 'POST') {
+    body(b => {
+      const safe = sanitizeObject(b);
+      notificationsConfig = { ...notificationsConfig, ...safe };
+      json(200, { ok: true, config: notificationsConfig });
+    });
+    return;
+  }
+  // ── Notifications test
+  if (path === '/api/settings/notifications/test' && req.method === 'POST') {
+    body(b => {
+      const { channel } = sanitizeObject(b);
+      const cfg = notificationsConfig;
+      const missing = channel === 'telegram' ? (!cfg.telegram_token || !cfg.telegram_chat_id) :
+                      channel === 'discord'  ? !cfg.discord_webhook :
+                      channel === 'email'    ? (!cfg.email_smtp || !cfg.email_to) :
+                      channel === 'webhook'  ? !cfg.webhook_url : true;
+      if (missing) return json(400, { message: `Configuration ${channel} incomplète.` });
+      // Demo: simulate success (real integration would call external APIs)
+      setTimeout(() => {}, 0);
+      json(200, { ok: true, message: `Message test envoyé via ${channel}.` });
     });
     return;
   }

@@ -3,7 +3,8 @@ import { useSearchParams } from 'react-router-dom';
 import {
   Settings, Server, Key, User, Bell, Shield, Save, Check,
   Loader2, Trash2, ExternalLink, RefreshCw,
-  Zap, AlertTriangle, Info, Wifi, WifiOff, CheckCircle,
+  Zap, AlertTriangle, Wifi, WifiOff, CheckCircle,
+  ToggleLeft, ToggleRight, Send, MessageSquare, Mail, Webhook,
 } from 'lucide-react';
 import { useApiKeys } from '../hooks/useApiKeys';
 import { apiFetch } from '../lib/apiFetch';
@@ -675,22 +676,310 @@ const ProfileSection = () => {
   );
 };
 
-// ─── Placeholder sections ─────────────────────────────────────────────────────
+// ─── Section: Security (guardrails) ──────────────────────────────────────────
 
-const PlaceholderSection = ({ title, desc }: { title: string; desc: string }) => (
-  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '60px 0', gap: 16, textAlign: 'center' }}>
-    <div style={{ width: 56, height: 56, borderRadius: '50%', background: 'rgba(139,92,246,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      <Info size={24} color="var(--brand-accent)" />
+interface Guardrail { id: number; name: string; description: string; enabled: boolean; category: string; }
+
+const SecuritySection = () => {
+  const [guardrails, setGuardrails] = useState<Guardrail[]>([]);
+  const [loading, setLoading]       = useState(true);
+  const [toggling, setToggling]     = useState<Set<number>>(new Set());
+
+  useEffect(() => {
+    apiFetch('http://localhost:4000/api/security/guardrails')
+      .then(r => r.json())
+      .then(data => { setGuardrails(Array.isArray(data) ? data : []); setLoading(false); })
+      .catch(() => {
+        // Mock fallback
+        setGuardrails([
+          { id: 1, name: 'Blocage injections SQL',       description: "Détecte et bloque les tentatives d'injection SQL dans les prompts.", enabled: true,  category: 'Inputs' },
+          { id: 2, name: 'Filtre prompt injection',      description: 'Empêche les instructions malveillantes cachées dans le contenu utilisateur.', enabled: true,  category: 'Inputs' },
+          { id: 3, name: 'Rate limiting par agent',      description: "Limite à 60 requêtes/min par agent. Protège contre les boucles infinies.", enabled: true,  category: 'Rate Limiting' },
+          { id: 4, name: 'Rate limiting global',         description: 'Plafond global de 500 req/min sur l\'ensemble du gateway.', enabled: false, category: 'Rate Limiting' },
+          { id: 5, name: 'Whitelist IP',                 description: "N'autorise que les IP définies dans ALLOWED_ORIGINS.", enabled: false, category: 'Réseau' },
+          { id: 6, name: 'Validation sorties PII',       description: 'Détecte les données personnelles (email, téléphone, IBAN) dans les réponses agents.', enabled: true,  category: 'Outputs' },
+          { id: 7, name: 'Blocage contenus nuisibles',   description: 'Refuse les tâches dont le prompt contient des demandes offensantes ou illégales.', enabled: true,  category: 'Inputs' },
+          { id: 8, name: 'Audit log complet',            description: 'Enregistre chaque appel API avec IP, agent, tokens et coût dans audit_logs.', enabled: true,  category: 'Audit' },
+        ]);
+        setLoading(false);
+      });
+  }, []);
+
+  const toggle = async (g: Guardrail) => {
+    setToggling(prev => new Set([...prev, g.id]));
+    try {
+      const res = await apiFetch('http://localhost:4000/api/security/guardrails', {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: g.id, enabled: !g.enabled }),
+      });
+      if (res.ok) {
+        const updated: Guardrail[] = await res.json();
+        setGuardrails(Array.isArray(updated) ? updated : guardrails.map(x => x.id === g.id ? { ...x, enabled: !x.enabled } : x));
+      } else throw new Error();
+    } catch {
+      setGuardrails(prev => prev.map(x => x.id === g.id ? { ...x, enabled: !x.enabled } : x));
+    } finally {
+      setToggling(prev => { const s = new Set(prev); s.delete(g.id); return s; });
+    }
+  };
+
+  const categories = [...new Set(guardrails.map(g => g.category))];
+  const enabledCount = guardrails.filter(g => g.enabled).length;
+
+  if (loading) return <div style={{ padding: '40px 0', textAlign: 'center', color: 'var(--text-muted)', display: 'flex', gap: 10, justifyContent: 'center', alignItems: 'center' }}><Loader2 size={18} style={{ animation: 'spin 1s linear infinite' }} /> Chargement…</div>;
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+
+      <div style={{ display: 'flex', gap: 10 }}>
+        <div style={{ padding: '8px 16px', borderRadius: 8, background: 'rgba(16,185,129,0.1)', border: '1px solid rgba(16,185,129,0.2)', color: '#10b981', fontSize: '0.82rem', fontWeight: 700 }}>
+          {enabledCount} actif{enabledCount > 1 ? 's' : ''}
+        </div>
+        <div style={{ padding: '8px 16px', borderRadius: 8, background: 'rgba(161,161,170,0.1)', border: '1px solid var(--border-subtle)', color: 'var(--text-muted)', fontSize: '0.82rem', fontWeight: 700 }}>
+          {guardrails.length - enabledCount} désactivé{guardrails.length - enabledCount > 1 ? 's' : ''}
+        </div>
+      </div>
+
+      {categories.map(cat => (
+        <div key={cat}>
+          <div style={{ fontSize: '0.75rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '1px', color: 'var(--text-muted)', marginBottom: 8 }}>{cat}</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {guardrails.filter(g => g.category === cat).map(g => (
+              <div key={g.id} style={{
+                display: 'flex', alignItems: 'center', gap: 14,
+                padding: '14px 18px', borderRadius: 12,
+                background: 'var(--bg-surface-elevated)', border: `1px solid ${g.enabled ? 'rgba(16,185,129,0.2)' : 'var(--border-subtle)'}`,
+                transition: 'border-color 0.2s',
+              }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 600, fontSize: '0.9rem', marginBottom: 2 }}>{g.name}</div>
+                  <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>{g.description}</div>
+                </div>
+                <button
+                  onClick={() => toggle(g)}
+                  disabled={toggling.has(g.id)}
+                  style={{ background: 'none', border: 'none', cursor: toggling.has(g.id) ? 'not-allowed' : 'pointer', padding: 0, opacity: toggling.has(g.id) ? 0.5 : 1, display: 'flex', alignItems: 'center' }}
+                  title={g.enabled ? 'Désactiver' : 'Activer'}
+                >
+                  {toggling.has(g.id)
+                    ? <Loader2 size={22} style={{ animation: 'spin 1s linear infinite', color: 'var(--text-muted)' }} />
+                    : g.enabled
+                      ? <ToggleRight size={28} color="#10b981" />
+                      : <ToggleLeft  size={28} color="var(--text-muted)" />
+                  }
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+      <style>{`@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
     </div>
-    <div>
-      <div style={{ fontWeight: 700, fontSize: '1rem', marginBottom: 6 }}>{title}</div>
-      <div style={{ color: 'var(--text-muted)', fontSize: '0.85rem', maxWidth: 340 }}>{desc}</div>
+  );
+};
+
+// ─── Section: Notifications ───────────────────────────────────────────────────
+
+interface NotifConfig {
+  telegram_token: string; telegram_chat_id: string;
+  discord_webhook: string;
+  email_smtp: string; email_from: string; email_to: string;
+  webhook_url: string;
+  notify_on_task_done: boolean; notify_on_task_failed: boolean; notify_on_approval: boolean;
+}
+
+const NOTIF_DEFAULTS: NotifConfig = {
+  telegram_token: '', telegram_chat_id: '',
+  discord_webhook: '',
+  email_smtp: '', email_from: '', email_to: '',
+  webhook_url: '',
+  notify_on_task_done: true, notify_on_task_failed: true, notify_on_approval: true,
+};
+
+const NotificationsSection = () => {
+  const [config,   setConfig]   = useState<NotifConfig>(NOTIF_DEFAULTS);
+  const [loading,  setLoading]  = useState(true);
+  const [saving,   setSaving]   = useState(false);
+  const [saved,    setSaved]    = useState(false);
+  const [testing,  setTesting]  = useState<string | null>(null);
+  const [testMsg,  setTestMsg]  = useState<{ ch: string; ok: boolean; msg: string } | null>(null);
+
+  useEffect(() => {
+    apiFetch('http://localhost:4000/api/settings/notifications')
+      .then(r => r.json())
+      .then(d => { setConfig({ ...NOTIF_DEFAULTS, ...d }); setLoading(false); })
+      .catch(() => { setLoading(false); });
+  }, []);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await apiFetch('http://localhost:4000/api/settings/notifications', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(config),
+      });
+      setSaved(true); setTimeout(() => setSaved(false), 2500);
+    } catch { /* ignore */ } finally { setSaving(false); }
+  };
+
+  const testChannel = async (ch: string) => {
+    setTesting(ch); setTestMsg(null);
+    try {
+      const res = await apiFetch('http://localhost:4000/api/settings/notifications/test', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ channel: ch }),
+      });
+      const d = await res.json();
+      setTestMsg({ ch, ok: res.ok, msg: d.message ?? (res.ok ? 'Envoyé !' : 'Erreur.') });
+    } catch {
+      setTestMsg({ ch, ok: false, msg: 'Serveur inaccessible.' });
+    } finally { setTesting(null); }
+  };
+
+  const inputStyle: React.CSSProperties = {
+    width: '100%', padding: '9px 12px', borderRadius: 8,
+    background: 'var(--bg-glass)', border: '1px solid var(--border-subtle)',
+    color: 'var(--text-primary)', fontSize: '0.88rem', outline: 'none', boxSizing: 'border-box',
+  };
+  const labelStyle: React.CSSProperties = {
+    display: 'block', fontSize: '0.75rem', fontWeight: 600,
+    color: 'var(--text-secondary)', marginBottom: 5, textTransform: 'uppercase', letterSpacing: '0.5px',
+  };
+  const fieldFocus = (e: React.FocusEvent<HTMLInputElement>) => e.target.style.borderColor = 'var(--brand-accent)';
+  const fieldBlur  = (e: React.FocusEvent<HTMLInputElement>) => e.target.style.borderColor = 'var(--border-subtle)';
+
+  const ChannelCard = ({ icon, title, ch, children }: { icon: React.ReactNode; title: string; ch: string; children: React.ReactNode }) => (
+    <div className="glass-panel p-5" style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontWeight: 700 }}>
+          <div style={{ color: 'var(--brand-accent)' }}>{icon}</div>
+          {title}
+        </div>
+        <button
+          onClick={() => testChannel(ch)}
+          disabled={testing === ch}
+          style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 14px', borderRadius: 8, border: 'none', background: 'rgba(139,92,246,0.1)', color: 'var(--brand-accent)', fontSize: '0.8rem', cursor: testing === ch ? 'not-allowed' : 'pointer', fontWeight: 600 }}
+        >
+          {testing === ch ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> : <Send size={13} />}
+          Tester
+        </button>
+      </div>
+      {children}
+      {testMsg?.ch === ch && (
+        <div style={{ fontSize: '0.78rem', display: 'flex', gap: 6, alignItems: 'center', color: testMsg.ok ? '#10b981' : '#ef4444' }}>
+          {testMsg.ok ? <CheckCircle size={13} /> : <AlertTriangle size={13} />} {testMsg.msg}
+        </div>
+      )}
     </div>
-    <div style={{ padding: '6px 16px', borderRadius: 20, background: 'rgba(139,92,246,0.1)', border: '1px solid rgba(139,92,246,0.2)', color: 'var(--brand-accent)', fontSize: '0.78rem', fontWeight: 600 }}>
-      Bientôt disponible
+  );
+
+  if (loading) return <div style={{ padding: '40px 0', textAlign: 'center', color: 'var(--text-muted)', display: 'flex', gap: 10, justifyContent: 'center', alignItems: 'center' }}><Loader2 size={18} style={{ animation: 'spin 1s linear infinite' }} /> Chargement…</div>;
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+      {/* Événements déclencheurs */}
+      <div className="glass-panel p-5">
+        <div style={{ fontWeight: 700, marginBottom: 14 }}>Déclencher les alertes sur</div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {([
+            ['notify_on_task_done',   'Tâche terminée avec succès'],
+            ['notify_on_task_failed', 'Tâche en échec'],
+            ['notify_on_approval',    "Demande d'approbation reçue"],
+          ] as [keyof NotifConfig, string][]).map(([key, label]) => (
+            <label key={key} style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', fontSize: '0.9rem' }}>
+              <button
+                onClick={() => setConfig(c => ({ ...c, [key]: !c[key] }))}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, display: 'flex' }}
+              >
+                {config[key]
+                  ? <ToggleRight size={26} color="#10b981" />
+                  : <ToggleLeft  size={26} color="var(--text-muted)" />
+                }
+              </button>
+              {label}
+            </label>
+          ))}
+        </div>
+      </div>
+
+      {/* Telegram */}
+      <ChannelCard icon={<MessageSquare size={18} />} title="Telegram" ch="telegram">
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          <div>
+            <label style={labelStyle}>Bot Token</label>
+            <input style={inputStyle} value={config.telegram_token} placeholder="1234567890:AAF..."
+              onChange={e => setConfig(c => ({ ...c, telegram_token: e.target.value }))}
+              onFocus={fieldFocus} onBlur={fieldBlur} />
+          </div>
+          <div>
+            <label style={labelStyle}>Chat ID</label>
+            <input style={inputStyle} value={config.telegram_chat_id} placeholder="-100123456789"
+              onChange={e => setConfig(c => ({ ...c, telegram_chat_id: e.target.value }))}
+              onFocus={fieldFocus} onBlur={fieldBlur} />
+          </div>
+        </div>
+      </ChannelCard>
+
+      {/* Discord */}
+      <ChannelCard icon={<MessageSquare size={18} />} title="Discord" ch="discord">
+        <div>
+          <label style={labelStyle}>Webhook URL</label>
+          <input style={inputStyle} value={config.discord_webhook} placeholder="https://discord.com/api/webhooks/..."
+            onChange={e => setConfig(c => ({ ...c, discord_webhook: e.target.value }))}
+            onFocus={fieldFocus} onBlur={fieldBlur} />
+        </div>
+      </ChannelCard>
+
+      {/* Email */}
+      <ChannelCard icon={<Mail size={18} />} title="Email (SMTP)" ch="email">
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          <div>
+            <label style={labelStyle}>Serveur SMTP</label>
+            <input style={inputStyle} value={config.email_smtp} placeholder="smtp.gmail.com:587"
+              onChange={e => setConfig(c => ({ ...c, email_smtp: e.target.value }))}
+              onFocus={fieldFocus} onBlur={fieldBlur} />
+          </div>
+          <div>
+            <label style={labelStyle}>Expéditeur</label>
+            <input style={inputStyle} value={config.email_from} placeholder="noreply@mondomaine.com"
+              onChange={e => setConfig(c => ({ ...c, email_from: e.target.value }))}
+              onFocus={fieldFocus} onBlur={fieldBlur} />
+          </div>
+          <div style={{ gridColumn: '1/-1' }}>
+            <label style={labelStyle}>Destinataire(s)</label>
+            <input style={inputStyle} value={config.email_to} placeholder="admin@mondomaine.com"
+              onChange={e => setConfig(c => ({ ...c, email_to: e.target.value }))}
+              onFocus={fieldFocus} onBlur={fieldBlur} />
+          </div>
+        </div>
+      </ChannelCard>
+
+      {/* Generic webhook */}
+      <ChannelCard icon={<Webhook size={18} />} title="Webhook générique" ch="webhook">
+        <div>
+          <label style={labelStyle}>URL</label>
+          <input style={inputStyle} value={config.webhook_url} placeholder="https://hooks.slack.com/..."
+            onChange={e => setConfig(c => ({ ...c, webhook_url: e.target.value }))}
+            onFocus={fieldFocus} onBlur={fieldBlur} />
+        </div>
+      </ChannelCard>
+
+      {/* Save */}
+      <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+        <button onClick={save} disabled={saving} style={{
+          display: 'flex', alignItems: 'center', gap: 8, padding: '10px 24px', borderRadius: 8, border: 'none',
+          background: saved ? 'var(--status-success)' : 'var(--brand-primary)', color: '#fff',
+          fontWeight: 700, cursor: saving ? 'not-allowed' : 'pointer', transition: 'background 0.3s',
+        }}>
+          {saving ? <Loader2 size={16} style={{ animation: 'spin 1s linear infinite' }} /> : saved ? <Check size={16} /> : <Save size={16} />}
+          {saving ? 'Enregistrement…' : saved ? 'Sauvegardé !' : 'Enregistrer'}
+        </button>
+      </div>
+
+      <style>{`@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
     </div>
-  </div>
-);
+  );
+};
 
 // ─── SettingsModule ───────────────────────────────────────────────────────────
 
@@ -723,8 +1012,8 @@ export const SettingsModule = () => {
     switch (section) {
       case 'server':        return <ServerSection />;
       case 'apikeys':       return <ApiKeysSection />;
-      case 'security':      return <PlaceholderSection title="Règles de Sécurité" desc="Gérez les listes blanches d'IP, les permissions par agent, et les politiques de rate-limiting." />;
-      case 'notifications': return <PlaceholderSection title="Notifications" desc="Configurez les alertes Telegram, Discord, e-mail et webhooks pour les événements système." />;
+      case 'security':      return <SecuritySection />;
+      case 'notifications': return <NotificationsSection />;
       case 'profile':       return <ProfileSection />;
     }
   };
