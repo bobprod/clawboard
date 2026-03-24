@@ -181,7 +181,7 @@ CREATE TABLE IF NOT EXISTS api_keys (
 -- ─── quotas — Suivi de consommation par modèle LLM ───────────────────────────
 
 CREATE TABLE IF NOT EXISTS quotas (
-  model_id   TEXT          PRIMARY KEY,
+  modele     TEXT          PRIMARY KEY,
   used       INTEGER       NOT NULL DEFAULT 0,
   limit_val  INTEGER       NOT NULL DEFAULT 0,
   cost       NUMERIC(10,4) NOT NULL DEFAULT 0,

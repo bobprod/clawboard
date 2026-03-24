@@ -1,0 +1,37 @@
+version: '3.9'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: clawboard-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: clawboard
+      POSTGRES_PASSWORD: clawboard123
+      POSTGRES_DB: clawboard
+    ports:
+      - "5432:5432"
+    volumes:
+      - clawboard_pgdata:/var/lib/postgresql/data
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+
+  backend:
+    image: node:22-alpine
+    container_name: clawboard-backend
+    restart: unless-stopped
+    working_dir: /app
+    volumes:
+      - .:/app
+      - /app/node_modules
+    command: sh -c "npm install && node --env-file=.env server.mjs"
+    ports:
+      - "4000:4000"
+    environment:
+      DATABASE_URL: postgresql://clawboard:clawboard123@postgres:5432/clawboard
+      PORT: 4000
+      ALLOWED_ORIGINS: http://localhost:5173,http://localhost:4173
+    depends_on:
+      - postgres
+
+volumes:
+  clawboard_pgdata:
