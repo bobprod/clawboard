@@ -12,7 +12,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import React from 'react';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 
 // ─── Mock ReactFlow — use real useState so setNodes/setEdges work ─────────────
 
@@ -72,7 +72,7 @@ const MOCK_AGENTS = [
 describe('AgentsHierarchyModule', () => {
   it('renders header with title and refresh button', async () => {
     mockFetch.mockResolvedValueOnce({ ok: true, json: async () => MOCK_AGENTS });
-    render(<AgentsHierarchyModule />);
+    await act(async () => { render(<AgentsHierarchyModule />); });
     expect(screen.getByText(/hiérarchie des agents/i)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /actualiser/i })).toBeInTheDocument();
   });
@@ -97,13 +97,13 @@ describe('AgentsHierarchyModule', () => {
 
   it('shows Démo badge when API returns non-ok', async () => {
     mockFetch.mockResolvedValueOnce({ ok: false, json: async () => ({}) });
-    render(<AgentsHierarchyModule />);
+    await act(async () => { render(<AgentsHierarchyModule />); });
     await waitFor(() => expect(screen.getByText('Démo')).toBeInTheDocument());
   });
 
   it('renders ReactFlow canvas', async () => {
     mockFetch.mockResolvedValueOnce({ ok: true, json: async () => MOCK_AGENTS });
-    render(<AgentsHierarchyModule />);
+    await act(async () => { render(<AgentsHierarchyModule />); });
     await waitFor(() => expect(screen.getByTestId('reactflow')).toBeInTheDocument());
   });
 
