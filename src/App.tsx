@@ -22,18 +22,19 @@ function readUser(): ClawUser | null {
 }
 
 // Route-level code splitting — loaded on demand
-const Dashboard           = lazy(() => import('./components/Dashboard').then(m => ({ default: m.Dashboard })));
-const TaskCreator         = lazy(() => import('./components/TaskCreator').then(m => ({ default: m.TaskCreator })));
-const TachesPage          = lazy(() => import('./components/TachesPage').then(m => ({ default: m.TachesPage })));
-const SecurityModule      = lazy(() => import('./components/SecurityModule').then(m => ({ default: m.SecurityModule })));
-const CollaborationModule = lazy(() => import('./components/CollaborationModule').then(m => ({ default: m.CollaborationModule })));
-const MemoryModule        = lazy(() => import('./components/MemoryModule').then(m => ({ default: m.MemoryModule })));
-const SkillsModule        = lazy(() => import('./components/SkillsModule').then(m => ({ default: m.SkillsModule })));
-const SettingsModule      = lazy(() => import('./components/SettingsModule').then(m => ({ default: m.SettingsModule })));
-const SchedulerModule     = lazy(() => import('./components/SchedulerModule').then(m => ({ default: m.SchedulerModule })));
-const ChatModule          = lazy(() => import('./components/ChatModule').then(m => ({ default: m.ChatModule })));
-const TerminalModule      = lazy(() => import('./components/TerminalModule').then(m => ({ default: m.TerminalModule })));
-const GitLogModule        = lazy(() => import('./components/GitLogModule').then(m => ({ default: m.GitLogModule })));
+const Dashboard              = lazy(() => import('./components/Dashboard').then(m => ({ default: m.Dashboard })));
+const TaskCreator            = lazy(() => import('./components/TaskCreator').then(m => ({ default: m.TaskCreator })));
+const TachesPage             = lazy(() => import('./components/TachesPage').then(m => ({ default: m.TachesPage })));
+const SecurityModule         = lazy(() => import('./components/SecurityModule').then(m => ({ default: m.SecurityModule })));
+const CollaborationModule    = lazy(() => import('./components/CollaborationModule').then(m => ({ default: m.CollaborationModule })));
+const AgentsHierarchyModule  = lazy(() => import('./components/AgentsHierarchyModule').then(m => ({ default: m.AgentsHierarchyModule })));
+const MemoryModule           = lazy(() => import('./components/MemoryModule').then(m => ({ default: m.MemoryModule })));
+const SkillsModule           = lazy(() => import('./components/SkillsModule').then(m => ({ default: m.SkillsModule })));
+const SettingsModule         = lazy(() => import('./components/SettingsModule').then(m => ({ default: m.SettingsModule })));
+const SchedulerModule        = lazy(() => import('./components/SchedulerModule').then(m => ({ default: m.SchedulerModule })));
+const ChatModule             = lazy(() => import('./components/ChatModule').then(m => ({ default: m.ChatModule })));
+const TerminalModule         = lazy(() => import('./components/TerminalModule').then(m => ({ default: m.TerminalModule })));
+const GitLogModule           = lazy(() => import('./components/GitLogModule').then(m => ({ default: m.GitLogModule })));
 import { useSSE } from './hooks/useSSE';
 import {
   TerminalSquare,
@@ -160,6 +161,7 @@ const PageContent = () => {
           <Route path="/scheduler" element={<SchedulerModule />} />
           <Route path="/security" element={<SecurityModule />} />
           <Route path="/collaborations" element={<CollaborationModule />} />
+          <Route path="/agents" element={<AgentsHierarchyModule />} />
           <Route path="/memory" element={<MemoryModule />} />
           <Route path="/skills" element={<SkillsModule />} />
           <Route path="/terminal" element={<div className="glass-panel p-0" style={{ height: 'calc(100vh - 120px)' }}><TerminalModule /></div>} />
@@ -197,6 +199,7 @@ const Sidebar = () => (
       <NavLink to="/scheduler" icon={CalendarClock} tourId="nav-scheduler">Planificateur</NavLink>
       <NavLink to="/security" icon={ShieldCheck} tourId="nav-security">Sécurité & Scan</NavLink>
       <NavLink to="/collaborations" icon={Network} tourId="nav-collaborations">Collaborations</NavLink>
+      <NavLink to="/agents" icon={Network} tourId="nav-agents">Agents Hierarchy</NavLink>
       <NavLink to="/memory" icon={BrainCircuit} tourId="nav-memory">Mémoire (QMD)</NavLink>
       <NavLink to="/skills" icon={ToyBrick}>Tâches & Skills</NavLink>
       <NavLink to="/terminal" icon={Terminal}>Terminal</NavLink>
