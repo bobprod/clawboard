@@ -1,8 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { Terminal, Play, Square, Trash2, Copy, ChevronRight, Loader2 } from 'lucide-react';
+import { Terminal, Play, Trash2, Copy, ChevronRight, Loader2 } from 'lucide-react';
 
 const BASE = 'http://localhost:4000';
-const WS_BASE = BASE.replace('http', 'ws');
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -28,7 +27,7 @@ const BUILTINS: Record<string, (args: string[]) => string> = {
     '  status             Statut du gateway',
     '  tasks              Lister les tâches actives',
     '  run <task-id>      Rejouer une tâche',
-    '  logs <task-id>     Afficher les logs d\'une tâche',
+    '  logs <task-id>     Afficher les logs d\u0027une tâche',
     '  health             Vérifier la santé du système',
     '  echo <texte>       Répéter le texte',
     '  date               Date et heure actuelles',
@@ -81,7 +80,6 @@ export const TerminalModule = () => {
   const [showTs,  setShowTs]      = useState(false);
   const inputRef  = useRef<HTMLInputElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
-  const wsRef     = useRef<WebSocket | null>(null);
 
   // Auto-scroll
   useEffect(() => {

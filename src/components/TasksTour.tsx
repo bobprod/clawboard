@@ -496,7 +496,6 @@ export const TasksTour = ({ forceRun = false, onClose }: TasksTourProps) => {
       showProgress
       showSkipButton
       scrollToFirstStep
-      scrollToSteps
       scrollOffset={120}
       disableOverlayClose
       spotlightPadding={8}

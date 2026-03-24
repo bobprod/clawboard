@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Wifi, WifiOff, RefreshCw, Server, AlertTriangle, CheckCircle2, Clock } from 'lucide-react';
+import { WifiOff, RefreshCw, Server, AlertTriangle, CheckCircle2, Clock } from 'lucide-react';
 import { apiFetch } from '../lib/apiFetch';
 
 const BASE = 'http://localhost:4000';

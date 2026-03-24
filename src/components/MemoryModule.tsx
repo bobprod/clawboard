@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
   Search, Database, FileText, BrainCircuit, Plus, Trash2, Save, X,
-  RefreshCw, Check, Edit3, Eye, Code2, Zap, AlertTriangle,
+  RefreshCw, Check, Edit3, Eye, Code2, AlertTriangle,
 } from 'lucide-react';
 import { apiFetch } from '../lib/apiFetch';
 

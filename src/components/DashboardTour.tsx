@@ -303,11 +303,6 @@ export const DashboardTour = () => {
           color: '#6b7280',
           fontSize: '0.78rem',
         },
-        progressBar: {
-          backgroundColor: '#8b5cf6',
-          height: 4,
-          borderRadius: 2,
-        },
         spotlight: {
           borderRadius: 12,
           boxShadow: '0 0 0 3px rgba(139,92,246,0.4), 0 0 40px rgba(139,92,246,0.15)',

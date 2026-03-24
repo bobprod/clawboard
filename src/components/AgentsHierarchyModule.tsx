@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+// React is used implicitly via JSX transform
 import {
   ReactFlow,
   MiniMap,
@@ -9,11 +9,19 @@ import {
   Handle,
   Position,
 } from '@xyflow/react';
-import type { NodeProps, Node, Edge } from '@xyflow/react';
+import type { Node, Edge } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { Network, Server, Play, Square, Activity, Bot } from 'lucide-react';
 
-const AgentNode = ({ data }: NodeProps) => {
+interface AgentNodeData {
+  label: string;
+  role: string;
+  model: string;
+  status: string;
+  [key: string]: unknown;
+}
+
+const AgentNode = ({ data }: { data: AgentNodeData }) => {
   const isRunning = data.status === 'active';
 
   return (
@@ -125,8 +133,8 @@ const initialEdges: Edge[] = [
 ];
 
 export const AgentsHierarchyModule = () => {
-  const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
-  const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
+  const [nodes, _setNodes, onNodesChange] = useNodesState(initialNodes);
+  const [edges, _setEdges, onEdgesChange] = useEdgesState(initialEdges);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', height: '100%', paddingBottom: '20px' }}>

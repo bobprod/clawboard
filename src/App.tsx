@@ -1,19 +1,40 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, Suspense, lazy } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link, useLocation, useNavigate } from 'react-router-dom';
-import { Dashboard } from './components/Dashboard';
-import { TaskCreator } from './components/TaskCreator';
-import { TachesPage } from './components/TachesPage';
-import { SecurityModule } from './components/SecurityModule';
-import { CollaborationModule } from './components/CollaborationModule';
-import { AgentsHierarchyModule } from './components/AgentsHierarchyModule';
-import { MemoryModule } from './components/MemoryModule';
-import { SkillsModule } from './components/SkillsModule';
-import { SettingsModule } from './components/SettingsModule';
-import { SchedulerModule } from './components/SchedulerModule';
-import { ChatModule } from './components/ChatModule';
-import { TerminalModule } from './components/TerminalModule';
 import { Dropdown } from './components/Dropdown';
 import { TourGuide, resetTour } from './components/TourGuide';
+import { LoginPage } from './components/LoginPage';
+
+interface ClawUser {
+  username: string;
+  displayName: string;
+  role: string;
+  avatar: string | null;
+  demo?: boolean;
+}
+
+function readUser(): ClawUser | null {
+  try {
+    const raw = localStorage.getItem('clawboard-user');
+    return raw ? (JSON.parse(raw) as ClawUser) : null;
+  } catch {
+    return null;
+  }
+}
+
+// Route-level code splitting — loaded on demand
+const Dashboard              = lazy(() => import('./components/Dashboard').then(m => ({ default: m.Dashboard })));
+const TaskCreator            = lazy(() => import('./components/TaskCreator').then(m => ({ default: m.TaskCreator })));
+const TachesPage             = lazy(() => import('./components/TachesPage').then(m => ({ default: m.TachesPage })));
+const SecurityModule         = lazy(() => import('./components/SecurityModule').then(m => ({ default: m.SecurityModule })));
+const CollaborationModule    = lazy(() => import('./components/CollaborationModule').then(m => ({ default: m.CollaborationModule })));
+const AgentsHierarchyModule  = lazy(() => import('./components/AgentsHierarchyModule').then(m => ({ default: m.AgentsHierarchyModule })));
+const MemoryModule           = lazy(() => import('./components/MemoryModule').then(m => ({ default: m.MemoryModule })));
+const SkillsModule           = lazy(() => import('./components/SkillsModule').then(m => ({ default: m.SkillsModule })));
+const SettingsModule         = lazy(() => import('./components/SettingsModule').then(m => ({ default: m.SettingsModule })));
+const SchedulerModule        = lazy(() => import('./components/SchedulerModule').then(m => ({ default: m.SchedulerModule })));
+const ChatModule             = lazy(() => import('./components/ChatModule').then(m => ({ default: m.ChatModule })));
+const TerminalModule         = lazy(() => import('./components/TerminalModule').then(m => ({ default: m.TerminalModule })));
+const GitLogModule           = lazy(() => import('./components/GitLogModule').then(m => ({ default: m.GitLogModule })));
 import { useSSE } from './hooks/useSSE';
 import {
   TerminalSquare,
@@ -30,6 +51,7 @@ import {
   MessageSquare,
   MapIcon,
   Terminal,
+  GitBranch,
 } from 'lucide-react';
 import './index.css';
 
@@ -129,21 +151,24 @@ const PageContent = () => {
   const isChat = location.pathname === '/chat';
   return (
     <div className={`page-content${isChat ? ' chat-page' : ''}`}>
-      <Routes>
-        <Route path="/" element={<Dashboard />} />
-        <Route path="/tasks" element={<TachesPage />} />
-        <Route path="/tasks/new" element={<TaskCreator />} />
-        <Route path="/tasks/:taskId" element={<TachesPage />} />
-        <Route path="/chat" element={<ChatModule />} />
-        <Route path="/scheduler" element={<SchedulerModule />} />
-        <Route path="/security" element={<SecurityModule />} />
-        <Route path="/collaborations" element={<CollaborationModule />} />
-        <Route path="/agents" element={<AgentsHierarchyModule />} />
-        <Route path="/memory" element={<MemoryModule />} />
-        <Route path="/skills" element={<SkillsModule />} />
-        <Route path="/terminal" element={<div className="glass-panel p-0" style={{ height: 'calc(100vh - 120px)' }}><TerminalModule /></div>} />
-        <Route path="/settings" element={<SettingsModule />} />
-      </Routes>
+      <Suspense fallback={<div style={{ padding: '2rem', color: 'var(--text-secondary)' }}>Chargement…</div>}>
+        <Routes>
+          <Route path="/" element={<Dashboard />} />
+          <Route path="/tasks" element={<TachesPage />} />
+          <Route path="/tasks/new" element={<TaskCreator />} />
+          <Route path="/tasks/:taskId" element={<TachesPage />} />
+          <Route path="/chat" element={<ChatModule />} />
+          <Route path="/scheduler" element={<SchedulerModule />} />
+          <Route path="/security" element={<SecurityModule />} />
+          <Route path="/collaborations" element={<CollaborationModule />} />
+          <Route path="/agents" element={<AgentsHierarchyModule />} />
+          <Route path="/memory" element={<MemoryModule />} />
+          <Route path="/skills" element={<SkillsModule />} />
+          <Route path="/terminal" element={<div className="glass-panel p-0" style={{ height: 'calc(100vh - 120px)' }}><TerminalModule /></div>} />
+          <Route path="/gitlog" element={<GitLogModule />} />
+          <Route path="/settings" element={<SettingsModule />} />
+        </Routes>
+      </Suspense>
     </div>
   );
 };
@@ -178,6 +203,7 @@ const Sidebar = () => (
       <NavLink to="/memory" icon={BrainCircuit} tourId="nav-memory">Mémoire (QMD)</NavLink>
       <NavLink to="/skills" icon={ToyBrick}>Tâches & Skills</NavLink>
       <NavLink to="/terminal" icon={Terminal}>Terminal</NavLink>
+      <NavLink to="/gitlog" icon={GitBranch}>Git Log</NavLink>
     </ul>
     <div className="sidebar-footer">
       <NavLink to="/settings" icon={Settings} tourId="nav-settings">Paramètres</NavLink>
@@ -196,15 +222,18 @@ const LiveCost = () => {
   );
 };
 
-const AppShell = ({ theme, setTheme }: { theme: string; setTheme: (t: string) => void }) => {
-  const navigate = useNavigate();
+const AppShell = ({ theme, setTheme, onLogout }: { theme: string; setTheme: (t: string) => void; onLogout: () => void }) => {
+  const navigate   = useNavigate();
   const [tourRun, setTourRun] = useState(false);
+  const user = readUser();
+  const displayName = user?.displayName ?? 'Admin';
+  const avatarSeed  = encodeURIComponent(user?.username ?? 'Admin');
+  const avatarSrc   = user?.avatar ?? `https://api.dicebear.com/7.x/notionists/svg?seed=${avatarSeed}&backgroundColor=8b5cf6`;
 
   const handleLogout = () => {
     localStorage.removeItem('clawboard-token');
     localStorage.removeItem('clawboard-user');
-    navigate('/');
-    window.location.reload();
+    onLogout();
   };
 
   const handleRestartTour = () => {
@@ -221,6 +250,11 @@ const AppShell = ({ theme, setTheme }: { theme: string; setTheme: (t: string) =>
           <h1>Bienvenue sur ClawBoard</h1>
           <div style={{ display: 'flex', alignItems: 'center', gap: '24px' }}>
             <LiveCost />
+            {user?.demo && (
+              <div style={{ padding: '4px 12px', borderRadius: '999px', background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.25)', color: '#f59e0b', fontSize: '0.75rem', fontWeight: 700 }}>
+                Démo
+              </div>
+            )}
             <ThemeSwitcher theme={theme} setTheme={setTheme} />
 
             <Dropdown
@@ -228,8 +262,8 @@ const AppShell = ({ theme, setTheme }: { theme: string; setTheme: (t: string) =>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '10px', background: 'rgba(255,255,255,0.05)', padding: '6px 16px 6px 6px', borderRadius: '999px', border: '1px solid var(--border-subtle)', transition: 'background 0.2s' }}
                   onMouseOver={(e) => e.currentTarget.style.background = 'rgba(255,255,255,0.1)'}
                   onMouseOut={(e) => e.currentTarget.style.background = 'rgba(255,255,255,0.05)'}>
-                  <img src="https://api.dicebear.com/7.x/notionists/svg?seed=Admin&backgroundColor=8b5cf6" alt="Profile" style={{ width: '34px', height: '34px', borderRadius: '50%' }} />
-                  <span style={{ fontWeight: 600, fontSize: '0.95rem', color: 'var(--text-primary)' }}>Admin</span>
+                  <img src={avatarSrc} alt="Profile" style={{ width: '34px', height: '34px', borderRadius: '50%' }} />
+                  <span style={{ fontWeight: 600, fontSize: '0.95rem', color: 'var(--text-primary)' }}>{displayName}</span>
                 </div>
               }
               items={[
@@ -251,9 +285,21 @@ const AppShell = ({ theme, setTheme }: { theme: string; setTheme: (t: string) =>
 
 const App = () => {
   const { theme, setTheme } = useTheme();
+  const [authenticated, setAuthenticated] = useState<boolean>(
+    () => Boolean(localStorage.getItem('clawboard-token'))
+  );
+
+  if (!authenticated) {
+    return (
+      <Router>
+        <LoginPage onLogin={() => setAuthenticated(true)} />
+      </Router>
+    );
+  }
+
   return (
     <Router>
-      <AppShell theme={theme} setTheme={setTheme} />
+      <AppShell theme={theme} setTheme={setTheme} onLogout={() => setAuthenticated(false)} />
     </Router>
   );
 };
