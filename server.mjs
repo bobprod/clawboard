@@ -1529,6 +1529,80 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // ── NemoClaw CLI proxy endpoints ────────────────────────────────────────────
+
+  // GET /api/nemoclaw/status
+  if (path === '/api/nemoclaw/status' && req.method === 'GET') {
+    json(200, {
+      installed: false,
+      version: null,
+      sandboxes: [],
+      message: 'NemoClaw not installed on this host. Run "nemoclaw onboard" to set up.',
+    });
+    return;
+  }
+
+  // GET /api/nemoclaw/logs
+  if (path === '/api/nemoclaw/logs' && req.method === 'GET') {
+    json(200, {
+      installed: false,
+      logs: [
+        '[demo] NemoClaw is not installed on this server.',
+        '[demo] Install it via: curl -fsSL https://www.nvidia.com/nemoclaw.sh | bash',
+        '[demo] Then run: nemoclaw onboard',
+      ],
+    });
+    return;
+  }
+
+  // POST /api/nemoclaw/onboard
+  if (path === '/api/nemoclaw/onboard' && req.method === 'POST') {
+    json(200, {
+      installed: false,
+      message: 'NemoClaw is not installed on this server. To install it on your machine, run:\n  curl -fsSL https://www.nvidia.com/nemoclaw.sh | bash\nThen rerun "nemoclaw onboard" in your local terminal.',
+    });
+    return;
+  }
+
+  // POST /api/nemoclaw/launch
+  if (path === '/api/nemoclaw/launch' && req.method === 'POST') {
+    json(200, {
+      installed: false,
+      message: 'NemoClaw is not installed. Install it first, then run "nemoclaw launch".',
+    });
+    return;
+  }
+
+  // POST /api/nemoclaw/:name/connect
+  const connectMatch = path.match(/^\/api\/nemoclaw\/([^/]+)\/connect$/);
+  if (connectMatch && req.method === 'POST') {
+    const sandboxName = connectMatch[1];
+    json(200, {
+      installed: false,
+      sandbox: sandboxName,
+      message: `Sandbox "${sandboxName}" not found. NemoClaw is not installed on this server.`,
+    });
+    return;
+  }
+
+  // GET /api/nemoclaw/openshell/term
+  if (path === '/api/nemoclaw/openshell/term' && req.method === 'GET') {
+    json(200, {
+      installed: false,
+      message: 'openshell is part of the NemoClaw toolkit. Install NemoClaw to use it.',
+    });
+    return;
+  }
+
+  // GET /api/nemoclaw/openclaw/tui
+  if (path === '/api/nemoclaw/openclaw/tui' && req.method === 'GET') {
+    json(200, {
+      installed: false,
+      message: 'openclaw TUI requires NemoClaw to be installed locally. Use the Agent Chat module instead.',
+    });
+    return;
+  }
+
   res.writeHead(404); res.end('Not found');
 });
 

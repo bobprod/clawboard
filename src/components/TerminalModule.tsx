@@ -20,17 +20,24 @@ const BUILTINS: Record<string, (args: string[]) => string> = {
   clear: () => '__CLEAR__',
   help: () => [
     '  Commandes disponibles :',
-    '  ────────────────────────────────────────',
-    '  help               Afficher cette aide',
-    '  clear              Effacer le terminal',
-    '  version            Version de Nemoclaw',
-    '  status             Statut du gateway',
-    '  tasks              Lister les tâches actives',
-    '  run <task-id>      Rejouer une tâche',
-    '  logs <task-id>     Afficher les logs d\u0027une tâche',
-    '  health             Vérifier la santé du système',
-    '  echo <texte>       Répéter le texte',
-    '  date               Date et heure actuelles',
+    '  ────────────────────────────────────────────────────',
+    '  help                      Afficher cette aide',
+    '  clear                     Effacer le terminal',
+    '  version                   Version de Nemoclaw',
+    '  status / health           Statut du gateway',
+    '  tasks                     Lister les tâches actives',
+    '  run <task-id>             Rejouer une tâche',
+    '  logs <task-id>            Afficher les logs d\u0027une tâche',
+    '  echo <texte>              Répéter le texte',
+    '  date                      Date et heure actuelles',
+    '  ────────────────────────────────────────────────────',
+    '  nemoclaw onboard          Assistant de configuration initiale',
+    '  nemoclaw status           Statut du sandbox NemoClaw',
+    '  nemoclaw logs             Logs du sandbox NemoClaw',
+    '  nemoclaw <nom> connect    Accéder au shell d\u0027un sandbox',
+    '  nemoclaw launch           Lancer le sandbox NemoClaw',
+    '  openshell term            TUI de politique de sécurité',
+    '  openclaw tui              Interface chat agents (TUI)',
   ].join('\n'),
   version: () => '  Nemoclaw v2.4.1 (OpenClaw-NVIDIA fork) — Clawboard UI v1.0.0',
   date: () => `  ${new Date().toLocaleString('fr-FR', { dateStyle: 'full', timeStyle: 'medium' })}`,
@@ -56,6 +63,196 @@ const loadHistory = (): string[] => {
 const saveHistory = (h: string[]) => {
   localStorage.setItem(HIST_KEY, JSON.stringify(h.slice(-200)));
 };
+
+// ─── NemoClaw demo output helpers ─────────────────────────────────────────────
+
+const NEMOCLAW_DEMO_STATUS = [
+  '  ╔══════════════════════════════════════════════╗',
+  '  ║  NemoClaw Status                             ║',
+  '  ╚══════════════════════════════════════════════╝',
+  '  ⚠  NemoClaw n\'est pas installé sur ce serveur.',
+  '  Pour l\'installer (Linux/WSL) :',
+  '    curl -fsSL https://www.nvidia.com/nemoclaw.sh | bash',
+  '  Puis relancez : nemoclaw onboard',
+];
+
+const NEMOCLAW_DEMO_ONBOARD = [
+  '  ╔══════════════════════════════════════════════╗',
+  '  ║  NemoClaw Onboarding Wizard                  ║',
+  '  ╚══════════════════════════════════════════════╝',
+  '  [1/4] Vérification des prérequis…',
+  '  ✗  NemoClaw CLI introuvable dans le PATH.',
+  '',
+  '  Installation rapide (Linux / WSL Ubuntu 22.04+) :',
+  '    curl -fsSL https://www.nvidia.com/nemoclaw.sh | bash',
+  '    nemoclaw onboard',
+  '',
+  '  Documentation : https://github.com/NVIDIA/NemoClaw',
+];
+
+type LineAppendFn = (lines: TermLine[]) => void;
+
+async function executeNemoclaw(args: string[], appendLines: LineAppendFn): Promise<void> {
+  const sub = args[0];
+
+  if (!sub || sub === 'help') {
+    appendLines([
+      mkLine('output', '  Usage : nemoclaw <commande>'),
+      mkLine('output', '  Commandes : onboard | status | logs | <nom> connect | launch'),
+    ]);
+    return;
+  }
+
+  // nemoclaw <name> connect
+  if (args[1] === 'connect') {
+    const sandboxName = args[0];
+    try {
+      const res = await fetch(`${BASE}/api/nemoclaw/${sandboxName}/connect`, { method: 'POST' });
+      const data = await res.json();
+      if (data.installed) {
+        appendLines([mkLine('success', `  ✓ Connecté au sandbox "${sandboxName}".`)]);
+      } else {
+        appendLines([
+          mkLine('system', `  Sandbox : ${sandboxName}`),
+          mkLine('error',  `  ✗ ${data.message}`),
+        ]);
+      }
+    } catch {
+      appendLines([
+        mkLine('error',  `  ✗ Impossible de joindre le backend.`),
+        mkLine('output', `  Essayez directement : nemoclaw ${sandboxName} connect`),
+      ]);
+    }
+    return;
+  }
+
+  if (sub === 'onboard') {
+    try {
+      const res = await fetch(`${BASE}/api/nemoclaw/onboard`, { method: 'POST' });
+      const data = await res.json();
+      if (data.installed) {
+        appendLines([mkLine('success', '  ✓ NemoClaw déjà configuré.')]);
+      } else {
+        appendLines(NEMOCLAW_DEMO_ONBOARD.map(l => mkLine('output', l)));
+      }
+    } catch {
+      appendLines(NEMOCLAW_DEMO_ONBOARD.map(l => mkLine('output', l)));
+    }
+    return;
+  }
+
+  if (sub === 'status') {
+    try {
+      const res = await fetch(`${BASE}/api/nemoclaw/status`);
+      const data = await res.json();
+      if (data.installed) {
+        appendLines([
+          mkLine('success', `  ✓ NemoClaw v${data.version} — actif`),
+          mkLine('output',  `  Sandboxes : ${data.sandboxes?.length ?? 0}`),
+          ...(data.sandboxes ?? []).map((s: string) => mkLine('output', `    · ${s}`)),
+        ]);
+      } else {
+        appendLines(NEMOCLAW_DEMO_STATUS.map(l => mkLine('output', l)));
+      }
+    } catch {
+      appendLines(NEMOCLAW_DEMO_STATUS.map(l => mkLine('output', l)));
+    }
+    return;
+  }
+
+  if (sub === 'logs') {
+    try {
+      const res = await fetch(`${BASE}/api/nemoclaw/logs`);
+      const data = await res.json();
+      const logLines: string[] = data.logs ?? ['(aucun log disponible)'];
+      appendLines(logLines.map((l: string) => mkLine('output', `  ${l}`)));
+    } catch {
+      appendLines([
+        mkLine('error',  '  ✗ Impossible de récupérer les logs.'),
+        mkLine('output', '  NemoClaw n\'est pas installé sur ce serveur.'),
+      ]);
+    }
+    return;
+  }
+
+  if (sub === 'launch') {
+    try {
+      const res = await fetch(`${BASE}/api/nemoclaw/launch`, { method: 'POST' });
+      const data = await res.json();
+      if (data.installed) {
+        appendLines([mkLine('success', '  ✓ NemoClaw sandbox lancé.')]);
+      } else {
+        appendLines([
+          mkLine('error',  `  ✗ ${data.message}`),
+        ]);
+      }
+    } catch {
+      appendLines([
+        mkLine('error',  '  ✗ NemoClaw non disponible.'),
+        mkLine('output', '  Installez NemoClaw puis relancez cette commande.'),
+      ]);
+    }
+    return;
+  }
+
+  appendLines([mkLine('error', `  ✗ Sous-commande nemoclaw inconnue : "${sub}". Tapez "help" pour l'aide.`)]);
+}
+
+async function executeOpenshell(args: string[], appendLines: LineAppendFn): Promise<void> {
+  const sub = args[0];
+  if (sub === 'term') {
+    try {
+      const res = await fetch(`${BASE}/api/nemoclaw/openshell/term`);
+      const data = await res.json();
+      if (data.installed) {
+        appendLines([mkLine('success', '  ✓ openshell term — TUI ouvert.')]);
+      } else {
+        appendLines([
+          mkLine('output', '  ╔══════════════════════════════════════════════╗'),
+          mkLine('output', '  ║  openshell term — Security Policy TUI        ║'),
+          mkLine('output', '  ╚══════════════════════════════════════════════╝'),
+          mkLine('error',  `  ✗ ${data.message}`),
+          mkLine('output', '  Configurez vos guardrails via : Paramètres → Sécurité'),
+        ]);
+      }
+    } catch {
+      appendLines([
+        mkLine('error',  '  ✗ openshell non disponible.'),
+        mkLine('output', '  Utilisez l\'onglet Sécurité dans les Paramètres.'),
+      ]);
+    }
+  } else {
+    appendLines([mkLine('error', `  ✗ Usage : openshell term`)]);
+  }
+}
+
+async function executeOpenclaw(args: string[], appendLines: LineAppendFn): Promise<void> {
+  const sub = args[0];
+  if (sub === 'tui') {
+    try {
+      const res = await fetch(`${BASE}/api/nemoclaw/openclaw/tui`);
+      const data = await res.json();
+      if (data.installed) {
+        appendLines([mkLine('success', '  ✓ openclaw TUI — interface ouverte.')]);
+      } else {
+        appendLines([
+          mkLine('output', '  ╔══════════════════════════════════════════════╗'),
+          mkLine('output', '  ║  openclaw tui — Agent Chat TUI               ║'),
+          mkLine('output', '  ╚══════════════════════════════════════════════╝'),
+          mkLine('error',  `  ✗ ${data.message}`),
+          mkLine('output', '  Utilisez le module Agent Chat dans le Dashboard.'),
+        ]);
+      }
+    } catch {
+      appendLines([
+        mkLine('error',  '  ✗ openclaw non disponible.'),
+        mkLine('output', '  Utilisez le module Agent Chat dans le Dashboard.'),
+      ]);
+    }
+  } else {
+    appendLines([mkLine('error', `  ✗ Usage : openclaw tui`)]);
+  }
+}
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
@@ -161,6 +358,15 @@ export const TerminalModule = () => {
         const text = await res.text();
         const logLines = text.split('\n').slice(0, 50);
         appendLines(logLines.map(l => mkLine('output', `  ${l}`)));
+
+      } else if (verb === 'nemoclaw') {
+        await executeNemoclaw(args, appendLines);
+
+      } else if (verb === 'openshell') {
+        await executeOpenshell(args, appendLines);
+
+      } else if (verb === 'openclaw') {
+        await executeOpenclaw(args, appendLines);
 
       } else {
         // Forward to gateway shell endpoint
