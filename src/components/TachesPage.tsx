@@ -320,6 +320,23 @@ function TabTaches({ tasks, onSelect }: { tasks: Task[]; onSelect: (id: string) 
     } catch {}
     setReplayingId(null);
   };
+
+  // Navigate to TaskCreator pre-filled with task params (Rejouer = new run from scratch)
+  const handleReplayNavigate = (task: Task) => {
+    const t = task as any;
+    navigate('/tasks/new', { state: { prefill: {
+      name:         t.name || task.title || '',
+      instructions: t.instructions ?? t.description ?? '',
+      skillName:    t.skillName ?? '',
+      llmModel:     t.llmModel  ?? (task as any).llmMode ?? '',
+      agent:        t.agent     ?? t.agentId ?? 'main',
+      canal:        t.channelTarget?.platform ?? t.canal ?? 'telegram',
+      destinataire: t.channelTarget?.targetId  ?? t.destinataire ?? '',
+      timeoutMin:   t.timeoutMin  ?? 30,
+      objectives:   t.objectives  ?? [],
+      disablePreInstructions: t.disablePreInstructions ?? false,
+    }}});
+  };
   const statuses = ['all', 'running', 'planned', 'completed', 'failed'];
 
   const filtered = tasks
@@ -503,8 +520,8 @@ function TabTaches({ tasks, onSelect }: { tasks: Task[]; onSelect: (id: string) 
                   <Dropdown
                     trigger={<div style={{ padding: '6px', borderRadius: 6, color: 'var(--text-muted)', cursor: 'pointer' }}><MoreVertical size={15} /></div>}
                     items={[
-                      { icon: Copy,      label: 'Cloner',   onClick: () => handleClone(task) },
-                      ...(task.status === 'failed' ? [{ icon: RotateCcw, label: 'Rejouer', onClick: () => handleReplay(task) }] : []),
+                      { icon: Copy,      label: '📋 Cloner',          onClick: () => handleClone(task) },
+                      ...(task.status === 'failed' ? [{ icon: RotateCcw, label: '🔁 Rejouer', onClick: () => handleReplayNavigate(task) }] : []),
                     ]}
                   />
                 </div>
@@ -767,31 +784,41 @@ function TabModeles() {
   );
 }
 
+// ─── Relative time helper ──────────────────────────────────────────────────────
+
+function timeAgo(dateStr: string | undefined): string {
+  if (!dateStr) return '';
+  const diff = Date.now() - new Date(dateStr).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 2)  return 'à l\'instant';
+  if (mins < 60) return `il y a ${mins} min`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24)  return `il y a ${hrs}h`;
+  const days = Math.floor(hrs / 24);
+  return `il y a ${days}j`;
+}
+
 // ─── Tab: Récurrences ─────────────────────────────────────────────────────────
 
 function TabRecurrences() {
   const [recurrences, setRecurrences] = useState<Recurrence[]>([]);
   const [running, setRunning] = useState<string | null>(null);
-  const [failedModeleIds, setFailedModeleIds] = useState<Set<string>>(new Set());
+  // Map modeleId → last archive entry (regardless of status)
+  const [lastExecMap, setLastExecMap] = useState<Record<string, ArchiveEntry>>({});
 
   useEffect(() => {
     apiFetch(`${BASE}/api/recurrences`).then(r => r.json()).then(d => setRecurrences(Array.isArray(d) ? d : [])).catch(() => {});
-    // Cross-ref: find modeleIds whose last archive entry was a failure
+    // Cross-ref: keep the most-recent archive entry per modeleId
     apiFetch(`${BASE}/api/archives`).then(r => r.json()).then((archives: ArchiveEntry[]) => {
-      const lastByModele: Record<string, ArchiveEntry> = {};
+      const map: Record<string, ArchiveEntry> = {};
       for (const a of archives) {
         if (!a.modeleId) continue;
-        const prev = lastByModele[a.modeleId];
+        const prev = map[a.modeleId];
         if (!prev || new Date(a.startedAt ?? a.date ?? 0) > new Date(prev.startedAt ?? prev.date ?? 0)) {
-          lastByModele[a.modeleId] = a;
+          map[a.modeleId] = a;
         }
       }
-      const failed = new Set(
-        Object.entries(lastByModele)
-          .filter(([, a]) => a.exitCode !== 0 && a.status !== 'ok' && a.status !== 'completed')
-          .map(([id]) => id)
-      );
-      setFailedModeleIds(failed);
+      setLastExecMap(map);
     }).catch(() => {});
   }, []);
 
@@ -835,18 +862,32 @@ function TabRecurrences() {
 
           {/* Name + cron */}
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
               <span style={{ fontWeight: 600, color: 'var(--text-primary)', fontSize: '0.95rem' }}>{rec.name}</span>
-              {failedModeleIds.has(rec.modeleId) && (
-                <span title="Dernière exécution en échec" style={{
-                  display: 'inline-flex', alignItems: 'center', gap: 4,
-                  fontSize: '10px', fontWeight: 700, padding: '2px 8px', borderRadius: 10,
-                  background: 'rgba(239,68,68,0.1)', color: '#ef4444',
-                  border: '1px solid rgba(239,68,68,0.25)',
-                }}>
-                  <AlertTriangle size={10} /> ÉCHEC
-                </span>
-              )}
+              {lastExecMap[rec.modeleId] && (() => {
+                const le = lastExecMap[rec.modeleId];
+                const ok = le.exitCode === 0 || le.status === 'ok' || le.status === 'completed';
+                const when = timeAgo(le.startedAt ?? le.date);
+                return ok ? (
+                  <span title={`Dernière exécution : succès ${when}`} style={{
+                    display: 'inline-flex', alignItems: 'center', gap: 4,
+                    fontSize: '10px', fontWeight: 700, padding: '2px 8px', borderRadius: 10,
+                    background: 'rgba(16,185,129,0.1)', color: '#10b981',
+                    border: '1px solid rgba(16,185,129,0.25)',
+                  }}>
+                    ✅ {when}
+                  </span>
+                ) : (
+                  <span title="Dernière exécution en échec" style={{
+                    display: 'inline-flex', alignItems: 'center', gap: 4,
+                    fontSize: '10px', fontWeight: 700, padding: '2px 8px', borderRadius: 10,
+                    background: 'rgba(239,68,68,0.1)', color: '#ef4444',
+                    border: '1px solid rgba(239,68,68,0.25)',
+                  }}>
+                    <AlertTriangle size={10} /> ⚠️ Dernière exécution échouée
+                  </span>
+                );
+              })()}
             </div>
             <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginTop: '4px', flexWrap: 'wrap' }}>
               <Tag label={rec.cronExpr} color="#a1a1aa" />
