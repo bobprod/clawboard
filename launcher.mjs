@@ -7,7 +7,8 @@
  * Mode DEV  : lance backend + Vite separement
  */
 
-import { createServer } from 'http';
+import { createServer, request as httpRequest } from 'http';
+import { copyFileSync } from 'fs';
 import { spawn, spawnSync } from 'child_process';
 import { readFileSync, existsSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
@@ -137,6 +138,62 @@ function broadcastState() {
   for (const res of sseClients) { try { res.write(data); } catch (_) {} }
 }
 
+// ── Poll /api/health jusqu'a ce que le backend reponde ───────────────────────
+
+function pollBackendHealth(maxAttempts = 60, intervalMs = 500) {
+  return new Promise((resolve, reject) => {
+    let attempts = 0;
+    function tryOnce() {
+      attempts++;
+      const req = httpRequest(
+        { hostname: 'localhost', port: BACKEND_PORT, path: '/api/health', method: 'GET', timeout: 400 },
+        res => { if (res.statusCode < 500) resolve(); else schedule(); }
+      );
+      req.on('error', schedule);
+      req.on('timeout', () => { req.destroy(); schedule(); });
+      req.end();
+    }
+    function schedule() {
+      if (attempts >= maxAttempts) { reject(new Error('Backend timeout apres ' + maxAttempts + ' tentatives')); return; }
+      setTimeout(tryOnce, intervalMs);
+    }
+    tryOnce();
+  });
+}
+
+// ── Verifie que .env existe, sinon cree un minimal ────────────────────────────
+
+function ensureEnv() {
+  const envPath     = join(__dirname, '.env');
+  const examplePath = join(__dirname, '.env.example');
+  if (!existsSync(envPath)) {
+    if (existsSync(examplePath)) {
+      copyFileSync(examplePath, envPath);
+      addLog('⚠ .env absent — copie depuis .env.example. Verifiez DATABASE_URL.', 'warn');
+    } else {
+      writeFileSync(envPath, '# ClawBoard — configuration minimale\nPORT=4000\n', 'utf8');
+      addLog('⚠ .env absent — fichier minimal cree. Configurez DATABASE_URL avant de relancer.', 'warn');
+    }
+    return false;
+  }
+  return true;
+}
+
+// ── Kill propre (Windows ne supporte pas SIGTERM) ─────────────────────────────
+
+function killProc(proc) {
+  if (!proc) return;
+  try {
+    if (process.platform === 'win32') {
+      // Sur Windows, kill() sans signal envoie TerminateProcess (equivalent SIGKILL)
+      proc.kill();
+    } else {
+      proc.kill('SIGTERM');
+      setTimeout(() => { try { proc.kill('SIGKILL'); } catch (_) {} }, 3000);
+    }
+  } catch (_) {}
+}
+
 // ── Demarrage des processus ───────────────────────────────────────────────────
 
 function startAll() {
@@ -145,85 +202,81 @@ function startAll() {
   broadcastState();
   logs = [];
 
-  const nodeExe = process.execPath;
+  // Verifie .env avant tout
+  const envOk = ensureEnv();
+  if (!envOk) {
+    addLog('⚠ Verifiez le fichier .env (DATABASE_URL, etc.) puis relancez.', 'warn');
+  }
+
+  const nodeExe  = process.execPath;
+  const envArgs  = existsSync(join(__dirname, '.env')) ? ['--env-file=.env'] : [];
 
   if (isProd) {
-    addLog('▶ Mode Production — demarrage du backend (sert aussi le frontend)...', 'sys');
+    addLog('▶ Mode Production — demarrage du backend...', 'sys');
 
-    backendProc = spawn(nodeExe, ['--env-file=.env', 'server.mjs'], {
-      cwd: __dirname,
-      env: { ...process.env },
+    backendProc = spawn(nodeExe, [...envArgs, 'server.mjs'], {
+      cwd: __dirname, env: { ...process.env },
     });
-
-    backendProc.stdout.on('data', d => {
-      const msg = d.toString();
-      addLog(msg, 'backend');
-      if (msg.includes('ClawBoard Backend') || msg.includes(':' + BACKEND_PORT)) {
-        state = 'running';
-        broadcastState();
-        addLog(`ClawBoard pret → http://localhost:${BACKEND_PORT}`, 'sys');
-      }
-    });
+    backendProc.stdout.on('data', d => addLog(d.toString(), 'backend'));
     backendProc.stderr.on('data', d => addLog(d.toString(), 'warn'));
     backendProc.on('exit', code => {
       addLog(`Backend arrete (code ${code ?? '?'})`, 'error');
-      state = 'stopped';
-      broadcastState();
+      state = 'stopped'; broadcastState();
+    });
+
+    // Poll health au lieu de regex sur stdout
+    addLog('⏳ Attente readiness backend...', 'sys');
+    pollBackendHealth().then(() => {
+      state = 'running'; broadcastState();
+      addLog(`✓ ClawBoard pret → http://localhost:${BACKEND_PORT}`, 'sys');
+    }).catch(() => {
+      addLog('✗ Backend non disponible apres 30s — verifiez les logs.', 'error');
+      state = 'stopped'; broadcastState();
     });
 
   } else {
     addLog('▶ Mode Developpement — demarrage du backend Nemoclaw...', 'sys');
 
-    backendProc = spawn(nodeExe, ['--env-file=.env', 'server.mjs'], {
-      cwd: __dirname,
-      env: { ...process.env },
+    backendProc = spawn(nodeExe, [...envArgs, 'server.mjs'], {
+      cwd: __dirname, env: { ...process.env },
     });
-
     backendProc.stdout.on('data', d => addLog(d.toString(), 'backend'));
     backendProc.stderr.on('data', d => addLog(d.toString(), 'warn'));
     backendProc.on('exit', code => {
       addLog(`Backend arrete (code ${code ?? '?'})`, 'error');
-      state = 'stopped';
-      broadcastState();
+      state = 'stopped'; broadcastState();
     });
 
-    // Demarre le frontend 2s apres (laisse le temps au backend de bind le port)
-    setTimeout(() => {
-      addLog('▶ Demarrage du frontend Vite...', 'sys');
+    // Attend que le backend soit UP via poll HTTP, puis demarre Vite
+    addLog('⏳ Attente readiness backend...', 'sys');
+    pollBackendHealth().then(() => {
+      addLog('✓ Backend pret — demarrage du frontend Vite...', 'sys');
 
       const viteBin = join(__dirname, 'node_modules', 'vite', 'bin', 'vite.js');
       frontendProc = spawn(nodeExe, [viteBin], {
-        cwd: __dirname,
-        env: { ...process.env },
+        cwd: __dirname, env: { ...process.env },
       });
-
       frontendProc.stdout.on('data', d => {
         const msg = d.toString();
         addLog(msg, 'frontend');
+        // Vite confirme son port dans stdout
         if (msg.includes('Local:') || msg.includes('localhost:')) {
-          state = 'running';
-          broadcastState();
-          addLog(`ClawBoard pret → http://localhost:${FRONTEND_PORT}`, 'sys');
+          state = 'running'; broadcastState();
+          addLog(`✓ ClawBoard pret → http://localhost:${FRONTEND_PORT}`, 'sys');
         }
       });
       frontendProc.stderr.on('data', d => addLog(d.toString(), 'warn'));
-      frontendProc.on('exit', code => {
-        addLog(`Frontend arrete (code ${code ?? '?'})`, 'error');
-      });
-    }, 2000);
+      frontendProc.on('exit', code => addLog(`Frontend arrete (code ${code ?? '?'})`, 'error'));
+    }).catch(() => {
+      addLog('✗ Backend non disponible apres 30s — verifiez DATABASE_URL et les logs.', 'error');
+      state = 'stopped'; broadcastState();
+    });
   }
 }
 
 function stopAll() {
   addLog('⏹ Arret de ClawBoard...', 'sys');
-  // Tente SIGTERM puis SIGKILL apres 3s
-  [frontendProc, backendProc].forEach(proc => {
-    if (!proc) return;
-    try {
-      proc.kill('SIGTERM');
-      setTimeout(() => { try { proc.kill('SIGKILL'); } catch (_) {} }, 3000);
-    } catch (_) {}
-  });
+  [frontendProc, backendProc].forEach(killProc);
   frontendProc = null;
   backendProc  = null;
   state = 'idle';
@@ -822,6 +875,16 @@ const server = createServer((req, res) => {
   res.end('Not found');
 });
 
+server.on('error', err => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`\n  ✗ Port ${LAUNCHER_PORT} deja occupe — une instance du launcher tourne deja.`);
+    console.error(`  → Ouvrez http://localhost:${LAUNCHER_PORT} dans votre navigateur.\n`);
+    process.exit(1);
+  } else {
+    throw err;
+  }
+});
+
 server.listen(LAUNCHER_PORT, () => {
   const modeLabel = isProd ? 'PRODUCTION' : 'DEVELOPPEMENT';
   console.log('');
@@ -834,6 +897,18 @@ server.listen(LAUNCHER_PORT, () => {
   if (isFirstLaunch) {
     console.log('  [SETUP] Premier lancement detecte — wizard d\'installation disponible.');
     console.log('');
+  }
+
+  // Ouvre le navigateur APRES que le launcher ecoute (plus fiable que le timeout du .bat)
+  const url = `http://localhost:${LAUNCHER_PORT}`;
+  const opener =
+    process.platform === 'win32' ? ['cmd', ['/c', 'start', '', url]] :
+    process.platform === 'darwin' ? ['open', [url]] :
+    ['xdg-open', [url]];
+  try {
+    spawn(opener[0], opener[1], { detached: true, stdio: 'ignore' }).unref();
+  } catch (_) {
+    console.log(`  Ouvrez manuellement : ${url}`);
   }
 });
 
