@@ -3,6 +3,8 @@ id: report-gen
 name: report-gen
 description: Génération de rapports structurés Markdown à partir de données brutes ou de résultats d'analyse
 tags: [rapport, analyse, synthèse, Markdown, données]
+category: data
+status: active
 ---
 
 # report-gen

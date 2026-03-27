@@ -3,6 +3,8 @@ id: blog-writer
 name: blog-writer
 description: Rédaction d'articles de blog longs, engageants et optimisés SEO
 tags: [contenu, blog, rédaction, SEO, copywriting]
+category: contenu
+status: active
 ---
 
 # blog-writer

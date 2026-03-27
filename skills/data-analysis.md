@@ -3,6 +3,8 @@ id: data-analysis
 name: data-analysis
 description: Analyse de données structurées (CSV, JSON, tableaux) avec insights, statistiques et visualisations textuelles
 tags: [data, analyse, statistiques, CSV, JSON, insights]
+category: data
+status: active
 ---
 
 # data-analysis

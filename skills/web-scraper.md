@@ -3,6 +3,8 @@ id: web-scraper
 name: web-scraper
 description: Scraping de pages web et extraction de données structurées (prix, articles, listings, tableaux)
 tags: [scraping, data, extraction, web]
+category: data
+status: active
 ---
 
 # web-scraper

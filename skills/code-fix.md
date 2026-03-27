@@ -3,6 +3,8 @@ id: code-fix
 name: code-fix
 description: Analyse et correction de bugs, erreurs, et problèmes de performance dans du code existant
 tags: [code, debug, bug, fix, correction]
+category: code
+status: active
 ---
 
 # code-fix

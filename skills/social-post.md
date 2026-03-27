@@ -3,6 +3,8 @@ id: social-post
 name: social-post
 description: Création de posts optimisés pour LinkedIn, Twitter/X, Instagram et TikTok
 tags: [social media, LinkedIn, Twitter, Instagram, contenu, viral]
+category: contenu
+status: active
 ---
 
 # social-post

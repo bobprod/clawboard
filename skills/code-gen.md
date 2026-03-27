@@ -3,6 +3,8 @@ id: code-gen
 name: code-gen
 description: Génération de code propre, documenté et testé dans n'importe quel langage
 tags: [code, développement, génération, programmation]
+category: code
+status: active
 ---
 
 # code-gen

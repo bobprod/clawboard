@@ -164,9 +164,14 @@ CREATE TABLE IF NOT EXISTS skills (
   description TEXT,
   content     TEXT,
   tags        TEXT[],
+  category    TEXT        NOT NULL DEFAULT 'general',
+  status      TEXT        NOT NULL DEFAULT 'active',
   created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE skills ADD COLUMN IF NOT EXISTS category TEXT NOT NULL DEFAULT 'general';
+ALTER TABLE skills ADD COLUMN IF NOT EXISTS status   TEXT NOT NULL DEFAULT 'active';
 
 -- ─── memory_docs — Documents mémoire + embeddings pgvector ───────────────────
 -- embedding vector(1536) : compatible OpenAI text-embedding-3-small/large

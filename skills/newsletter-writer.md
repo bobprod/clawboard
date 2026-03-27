@@ -3,6 +3,8 @@ id: newsletter-writer
 name: newsletter-writer
 description: Rédaction de newsletters engageantes avec structure éditoriale professionnelle
 tags: [newsletter, email, contenu, rédaction, engagement]
+category: contenu
+status: active
 ---
 
 # newsletter-writer

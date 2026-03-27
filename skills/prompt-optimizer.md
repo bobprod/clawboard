@@ -3,6 +3,8 @@ id: prompt-optimizer
 name: prompt-optimizer
 description: Optimisation et amélioration de prompts LLM pour de meilleurs résultats — compatible Claude, GPT, Gemini, Kimi
 tags: [prompt, LLM, optimisation, IA, Claude, GPT]
+category: productivite
+status: active
 ---
 
 # prompt-optimizer

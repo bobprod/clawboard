@@ -3,6 +3,8 @@ id: youtube-analyzer
 name: youtube-analyzer
 description: Analyse des tendances YouTube, veille concurrentielle vidéo, idées de contenu et optimisation SEO YouTube
 tags: [YouTube, vidéo, tendances, SEO, contenu, analyse]
+category: veille
+status: active
 ---
 
 # youtube-analyzer

@@ -3,6 +3,8 @@ id: seo-content
 name: seo-content
 description: Recherche de mots-clés, optimisation SEO et création de contenu optimisé pour les moteurs de recherche
 tags: [SEO, contenu, mots-clés, optimisation, trafic]
+category: contenu
+status: active
 ---
 
 # seo-content

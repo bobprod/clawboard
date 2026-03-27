@@ -3,6 +3,8 @@ id: morning-briefing
 name: morning-briefing
 description: Planning intelligent du matin — résumé des priorités, tâches du jour, alertes et météo des projets
 tags: [productivité, planning, matin, briefing, agenda]
+category: productivite
+status: active
 ---
 
 # morning-briefing

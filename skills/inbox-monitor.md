@@ -3,6 +3,8 @@ id: inbox-monitor
 name: inbox-monitor
 description: Surveillance et triage intelligent de la boîte mail — résumé, priorités, actions requises
 tags: [email, inbox, triage, productivité, monitoring]
+category: productivite
+status: active
 ---
 
 # inbox-monitor

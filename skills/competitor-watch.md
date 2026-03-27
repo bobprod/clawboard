@@ -3,6 +3,8 @@ id: competitor-watch
 name: competitor-watch
 description: Veille concurrentielle automatisée — surveille les concurrents, leurs publications, prix et mouvements stratégiques
 tags: [veille, concurrence, monitoring, stratégie, marché]
+category: veille
+status: active
 ---
 
 # competitor-watch
