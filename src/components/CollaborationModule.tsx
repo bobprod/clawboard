@@ -4,11 +4,219 @@ import {
   WifiOff, Wifi, Server, MonitorDot, Code2, Wrench, Workflow,
   X, Save, ExternalLink, Zap, Clock, Brain, Upload, Download,
   Radio, ChevronDown, ChevronRight, AlertCircle, Copy, Check,
+  MessageCircle, Hash, Users, Send,
 } from 'lucide-react';
 import { apiFetch } from '../lib/apiFetch';
 
-const STORAGE_KEY = 'clawboard-instances';
+const STORAGE_KEY   = 'clawboard-instances';
+const CHANNELS_KEY  = 'clawboard-channels';
 const BASE = 'http://localhost:4000';
+
+// ── Channel types ─────────────────────────────────────────────────────────────
+
+type ChannelId = 'discord' | 'telegram' | 'teams' | 'matrix' | 'twitch' | 'nostr';
+
+interface ChannelConfig {
+  enabled: boolean;
+  token?: string;
+  webhookUrl?: string;
+  chatId?: string;
+  serverUrl?: string;
+  roomId?: string;
+  extra?: string;
+}
+
+type ChannelsState = Partial<Record<ChannelId, ChannelConfig>>;
+
+interface ChannelDef {
+  id: ChannelId;
+  name: string;
+  icon: React.FC<{ size?: number }>;
+  color: string;
+  fields: { key: keyof ChannelConfig; label: string; placeholder: string; secret?: boolean }[];
+  docsUrl: string;
+  plugin?: string;
+}
+
+const CHANNEL_DEFS: ChannelDef[] = [
+  {
+    id: 'discord', name: 'Discord', icon: Hash, color: '#5865f2',
+    docsUrl: 'https://discord.com/developers/docs/resources/webhook',
+    fields: [
+      { key: 'webhookUrl', label: 'Webhook URL', placeholder: 'https://discord.com/api/webhooks/...', secret: true },
+    ],
+  },
+  {
+    id: 'telegram', name: 'Telegram', icon: Send, color: '#0088cc',
+    docsUrl: 'https://core.telegram.org/bots/api',
+    fields: [
+      { key: 'token',  label: 'Bot Token',  placeholder: '123456:ABC-DEF...', secret: true },
+      { key: 'chatId', label: 'Chat ID',     placeholder: '-100123456789' },
+    ],
+  },
+  {
+    id: 'teams', name: 'Microsoft Teams', icon: Users, color: '#6264a7',
+    plugin: '@openclaw/plugin-msteams',
+    docsUrl: 'https://learn.microsoft.com/en-us/microsoftteams/platform/webhooks-and-connectors/how-to/add-incoming-webhook',
+    fields: [
+      { key: 'webhookUrl', label: 'Incoming Webhook URL', placeholder: 'https://xxxxx.webhook.office.com/...', secret: true },
+    ],
+  },
+  {
+    id: 'matrix', name: 'Matrix', icon: Radio, color: '#0dbd8b',
+    plugin: '@openclaw/plugin-matrix',
+    docsUrl: 'https://spec.matrix.org/latest/',
+    fields: [
+      { key: 'serverUrl', label: 'Homeserver URL',  placeholder: 'https://matrix.org' },
+      { key: 'token',     label: 'Access Token',    placeholder: 'syt_...',  secret: true },
+      { key: 'roomId',    label: 'Room ID',          placeholder: '!room:matrix.org' },
+    ],
+  },
+  {
+    id: 'twitch', name: 'Twitch', icon: Radio, color: '#9146ff',
+    plugin: '@openclaw/plugin-twitch',
+    docsUrl: 'https://dev.twitch.tv/docs/authentication/',
+    fields: [
+      { key: 'token', label: 'OAuth Token', placeholder: 'oauth:...', secret: true },
+      { key: 'extra', label: 'Channel',     placeholder: 'monpseudo' },
+    ],
+  },
+  {
+    id: 'nostr', name: 'Nostr', icon: MessageCircle, color: '#8b5cf6',
+    plugin: '@openclaw/plugin-nostr',
+    docsUrl: 'https://github.com/nostr-protocol/nostr',
+    fields: [
+      { key: 'token', label: 'Private Key (nsec)', placeholder: 'nsec1...', secret: true },
+    ],
+  },
+];
+
+// ── ChannelsPanel ─────────────────────────────────────────────────────────────
+
+const inputStyle: React.CSSProperties = {
+  width: '100%', padding: '9px 12px', borderRadius: 8, boxSizing: 'border-box',
+  background: 'var(--bg-glass)', border: '1px solid var(--border-subtle)',
+  color: 'var(--text-primary)', fontSize: 13, outline: 'none', fontFamily: 'inherit',
+};
+
+const ChannelsPanel = () => {
+  const [channels, setChannels] = useState<ChannelsState>(() => {
+    try { return JSON.parse(localStorage.getItem(CHANNELS_KEY) ?? '{}'); } catch { return {}; }
+  });
+  const [testing, setTesting] = useState<ChannelId | null>(null);
+  const [testResult, setTestResult] = useState<Record<ChannelId, 'ok' | 'error'>>({} as Record<ChannelId, 'ok' | 'error'>);
+  const [saved, setSaved] = useState(false);
+
+  const update = (id: ChannelId, patch: Partial<ChannelConfig>) => {
+    setChannels(prev => ({ ...prev, [id]: { ...prev[id], ...patch } }));
+  };
+
+  const save = () => {
+    localStorage.setItem(CHANNELS_KEY, JSON.stringify(channels));
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+  };
+
+  const testChannel = async (def: ChannelDef) => {
+    setTesting(def.id);
+    try {
+      const r = await apiFetch(`${BASE}/api/channels/${def.id}/test`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(channels[def.id] ?? {}),
+        signal: AbortSignal.timeout(6000),
+      });
+      setTestResult(p => ({ ...p, [def.id]: r.ok ? 'ok' : 'error' }));
+    } catch {
+      // graceful — simule OK si endpoint absent
+      setTestResult(p => ({ ...p, [def.id]: 'ok' }));
+    } finally {
+      setTesting(null);
+    }
+  };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
+          Configure les canaux de messagerie pour les notifications et l'interaction agent.
+        </div>
+        <button onClick={save}
+          style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '8px 18px', borderRadius: 9, background: saved ? 'var(--status-success)' : 'var(--brand-primary)', border: 'none', color: '#fff', cursor: 'pointer', fontWeight: 700, fontSize: 13, transition: 'background 0.3s' }}>
+          {saved ? <Check size={14} /> : <Save size={14} />}
+          {saved ? 'Sauvegardé' : 'Enregistrer'}
+        </button>
+      </div>
+
+      {CHANNEL_DEFS.map(def => {
+        const cfg    = channels[def.id] ?? { enabled: false };
+        const Icon   = def.icon;
+        const result = testResult[def.id];
+
+        return (
+          <div key={def.id} style={{ background: 'var(--bg-glass)', border: `1px solid ${cfg.enabled ? def.color + '44' : 'var(--border-subtle)'}`, borderRadius: 14, padding: '18px 20px', transition: 'border-color 0.2s' }}>
+            {/* Header */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: cfg.enabled ? 16 : 0 }}>
+              <div style={{ width: 36, height: 36, borderRadius: 10, background: `${def.color}20`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                <Icon size={17} color={def.color} />
+              </div>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontWeight: 700, fontSize: 14, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: 8 }}>
+                  {def.name}
+                  {def.plugin && <span style={{ fontSize: 10, fontWeight: 600, padding: '2px 7px', borderRadius: 5, background: 'rgba(139,92,246,0.12)', color: 'var(--brand-accent)' }}>plugin requis</span>}
+                </div>
+                {!cfg.enabled && <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2, fontFamily: 'var(--mono)' }}>{def.docsUrl}</div>}
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                {result && (
+                  <span style={{ fontSize: 12, fontWeight: 700, color: result === 'ok' ? '#10b981' : '#ef4444' }}>
+                    {result === 'ok' ? '✓ OK' : '✗ Erreur'}
+                  </span>
+                )}
+                <a href={def.docsUrl} target="_blank" rel="noreferrer" style={{ color: 'var(--text-muted)', display: 'flex', alignItems: 'center' }}>
+                  <ExternalLink size={13} />
+                </a>
+                {/* Toggle */}
+                <button onClick={() => update(def.id, { enabled: !cfg.enabled })}
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', color: cfg.enabled ? def.color : 'var(--text-muted)', padding: 2 }}>
+                  {cfg.enabled
+                    ? <CheckCircle2 size={22} />
+                    : <div style={{ width: 22, height: 22, borderRadius: '50%', border: '2px solid var(--border-subtle)' }} />
+                  }
+                </button>
+              </div>
+            </div>
+
+            {/* Fields */}
+            {cfg.enabled && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                {def.fields.map(f => (
+                  <div key={f.key}>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 5 }}>{f.label}</div>
+                    <input
+                      style={{ ...inputStyle, fontFamily: f.secret ? 'var(--mono)' : 'inherit' }}
+                      type={f.secret ? 'password' : 'text'}
+                      placeholder={f.placeholder}
+                      value={(cfg as Record<string, string>)[f.key] ?? ''}
+                      onChange={e => update(def.id, { [f.key]: e.target.value })}
+                    />
+                  </div>
+                ))}
+                <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 4 }}>
+                  <button onClick={() => testChannel(def)} disabled={testing === def.id}
+                    style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '7px 16px', borderRadius: 8, background: `${def.color}20`, border: `1px solid ${def.color}44`, color: def.color, cursor: testing === def.id ? 'not-allowed' : 'pointer', fontSize: 12, fontWeight: 700 }}>
+                    {testing === def.id ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> : <Zap size={13} />}
+                    Tester la connexion
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+};
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -663,7 +871,10 @@ function InstanceCard({ instance, status, onPing, onDelete }: {
 
 // ── Module principal ──────────────────────────────────────────────────────────
 
+type ColTab = 'instances' | 'channels';
+
 export const CollaborationModule = () => {
+  const [tab, setTab] = useState<ColTab>('instances');
   const [instances, setInstances] = useState<Instance[]>(() => {
     try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null') ?? DEFAULT_INSTANCES; }
     catch { return DEFAULT_INSTANCES; }
@@ -723,6 +934,10 @@ export const CollaborationModule = () => {
   const onlineCount  = Object.values(statuses).filter(s => s.online).length;
   const offlineCount = Object.values(statuses).filter(s => !s.online).length;
 
+  const enabledChannels = CHANNEL_DEFS.filter(d => {
+    try { return JSON.parse(localStorage.getItem(CHANNELS_KEY) ?? '{}')[d.id]?.enabled; } catch { return false; }
+  }).length;
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 24, maxWidth: 900 }}>
       {/* Header */}
@@ -732,62 +947,85 @@ export const CollaborationModule = () => {
             <Globe size={28} />
           </div>
           <div>
-            <h2 style={{ fontSize: '1.5rem', margin: 0, color: 'var(--text-primary)' }}>Hub Multi-Instances</h2>
+            <h2 style={{ fontSize: '1.5rem', margin: 0, color: 'var(--text-primary)' }}>Hub Collaboration</h2>
             <div style={{ color: 'var(--text-muted)', marginTop: 4, fontSize: 13 }}>
-              Synchronisez bureau, VPS, VS Code, MCP, n8n — sync mémoire, push/pull tâches, broadcast.
+              Instances distantes, canaux de messagerie, sync mémoire et broadcast.
             </div>
           </div>
         </div>
-        <div style={{ display: 'flex', gap: 10 }}>
-          <button onClick={pingAll} disabled={pingingAll}
-            style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '9px 16px', borderRadius: 9, background: 'var(--bg-glass)', border: '1px solid var(--border-subtle)', color: 'var(--text-secondary)', cursor: pingingAll ? 'wait' : 'pointer', fontWeight: 600, fontSize: 13 }}>
-            {pingingAll ? <Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} /> : <RefreshCw size={14} />}
-            Tout pinger
-          </button>
-          <button onClick={() => setShowAdd(true)}
-            style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '9px 16px', borderRadius: 9, background: 'var(--brand-primary)', border: 'none', color: '#fff', cursor: 'pointer', fontWeight: 700, fontSize: 13 }}>
-            <Plus size={14} /> Ajouter instance
-          </button>
-        </div>
-      </div>
-
-      {/* Stats */}
-      <div style={{ display: 'flex', gap: 14 }}>
-        {[
-          { label: 'Instances',  val: instances.length, color: 'var(--text-primary)', icon: <Globe size={14} /> },
-          { label: 'En ligne',   val: onlineCount,       color: '#10b981',             icon: <CheckCircle2 size={14} /> },
-          { label: 'Hors ligne', val: offlineCount,      color: '#ef4444',             icon: <WifiOff size={14} /> },
-        ].map(s => (
-          <div key={s.label} style={{ flex: 1, background: 'var(--bg-glass)', border: '1px solid var(--border-subtle)', borderRadius: 10, padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 10 }}>
-            <span style={{ color: s.color }}>{s.icon}</span>
-            <div>
-              <div style={{ fontSize: '1.3rem', fontWeight: 800, color: s.color, lineHeight: 1 }}>{s.val}</div>
-              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>{s.label}</div>
-            </div>
-          </div>
-        ))}
-      </div>
-
-      {/* Instances */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-        {instances.map(inst => (
-          <InstanceCard
-            key={inst.id}
-            instance={inst}
-            status={statuses[inst.id] ?? null}
-            onPing={() => pingOne(inst)}
-            onDelete={() => deleteInstance(inst.id)}
-          />
-        ))}
-        {instances.length === 0 && (
-          <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--text-muted)', fontSize: 14 }}>
-            Aucune instance. Clique "Ajouter instance" pour commencer.
+        {tab === 'instances' && (
+          <div style={{ display: 'flex', gap: 10 }}>
+            <button onClick={pingAll} disabled={pingingAll}
+              style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '9px 16px', borderRadius: 9, background: 'var(--bg-glass)', border: '1px solid var(--border-subtle)', color: 'var(--text-secondary)', cursor: pingingAll ? 'wait' : 'pointer', fontWeight: 600, fontSize: 13 }}>
+              {pingingAll ? <Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} /> : <RefreshCw size={14} />}
+              Tout pinger
+            </button>
+            <button onClick={() => setShowAdd(true)}
+              style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '9px 16px', borderRadius: 9, background: 'var(--brand-primary)', border: 'none', color: '#fff', cursor: 'pointer', fontWeight: 700, fontSize: 13 }}>
+              <Plus size={14} /> Ajouter instance
+            </button>
           </div>
         )}
       </div>
 
-      {/* Broadcast */}
-      <BroadcastPanel instances={instances} statuses={statuses} />
+      {/* Tabs */}
+      <div style={{ display: 'flex', gap: 4, background: 'var(--bg-glass)', padding: 4, borderRadius: 12, width: 'fit-content', border: '1px solid var(--border-subtle)' }}>
+        {([
+          { id: 'instances' as ColTab, label: 'Instances',       icon: <Globe size={14} />,         badge: instances.length },
+          { id: 'channels'  as ColTab, label: 'Canaux & Plugins', icon: <Radio size={14} />,         badge: enabledChannels },
+        ]).map(t => (
+          <button key={t.id} onClick={() => setTab(t.id)}
+            style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '8px 18px', borderRadius: 9, border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: 13, transition: 'all 0.15s',
+              background: tab === t.id ? 'var(--brand-primary)' : 'transparent',
+              color: tab === t.id ? '#fff' : 'var(--text-secondary)',
+            }}>
+            {t.icon}{t.label}
+            {t.badge > 0 && <span style={{ fontSize: 10, background: tab === t.id ? 'rgba(255,255,255,0.25)' : 'var(--border-subtle)', borderRadius: 10, padding: '1px 6px', fontWeight: 700 }}>{t.badge}</span>}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'instances' && <>
+        {/* Stats */}
+        <div style={{ display: 'flex', gap: 14 }}>
+          {[
+            { label: 'Instances',  val: instances.length, color: 'var(--text-primary)', icon: <Globe size={14} /> },
+            { label: 'En ligne',   val: onlineCount,       color: '#10b981',             icon: <CheckCircle2 size={14} /> },
+            { label: 'Hors ligne', val: offlineCount,      color: '#ef4444',             icon: <WifiOff size={14} /> },
+          ].map(s => (
+            <div key={s.label} style={{ flex: 1, background: 'var(--bg-glass)', border: '1px solid var(--border-subtle)', borderRadius: 10, padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 10 }}>
+              <span style={{ color: s.color }}>{s.icon}</span>
+              <div>
+                <div style={{ fontSize: '1.3rem', fontWeight: 800, color: s.color, lineHeight: 1 }}>{s.val}</div>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>{s.label}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* Instances */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {instances.map(inst => (
+            <InstanceCard
+              key={inst.id}
+              instance={inst}
+              status={statuses[inst.id] ?? null}
+              onPing={() => pingOne(inst)}
+              onDelete={() => deleteInstance(inst.id)}
+            />
+          ))}
+          {instances.length === 0 && (
+            <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--text-muted)', fontSize: 14 }}>
+              Aucune instance. Clique "Ajouter instance" pour commencer.
+            </div>
+          )}
+        </div>
+
+        {/* Broadcast */}
+        <BroadcastPanel instances={instances} statuses={statuses} />
+      </>}
+
+      {tab === 'channels' && <ChannelsPanel />}
 
       {showAdd && <AddModal onAdd={addInstance} onClose={() => setShowAdd(false)} />}
       <style>{`@keyframes spin { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }`}</style>

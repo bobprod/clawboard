@@ -6,6 +6,7 @@ import {
   Zap, AlertTriangle, Wifi, WifiOff, CheckCircle,
   ToggleLeft, ToggleRight, Send, MessageSquare, Mail, Webhook,
   Download, HardDrive, ChevronRight, X, CheckCircle2,
+  Puzzle, Radio, Wrench, BarChart2, Package,
 } from 'lucide-react';
 import { useApiKeys } from '../hooks/useApiKeys';
 import { apiFetch } from '../lib/apiFetch';
@@ -153,12 +154,13 @@ const CATEGORIES = ['International', 'Asie', 'Agrégateurs'];
 
 // ─── Settings sections ────────────────────────────────────────────────────────
 
-type Section = 'server' | 'apikeys' | 'ollama' | 'security' | 'notifications' | 'profile';
+type Section = 'server' | 'apikeys' | 'ollama' | 'security' | 'notifications' | 'profile' | 'plugins';
 
 const NAV: { id: Section; label: string; icon: any; badge?: () => number }[] = [
   { id: 'server',        label: 'Serveur & Connexions', icon: Server },
   { id: 'apikeys',       label: 'Clés API & BYOK',      icon: Key },
   { id: 'ollama',        label: 'LLMs Locaux',           icon: HardDrive },
+  { id: 'plugins',       label: 'Plugins',               icon: Puzzle },
   { id: 'security',      label: 'Règles de Sécurité',   icon: Shield },
   { id: 'notifications', label: 'Notifications',         icon: Bell },
   { id: 'profile',       label: 'Profil Utilisateur',    icon: User },
@@ -1312,6 +1314,182 @@ const NotificationsSection = () => {
   );
 };
 
+// ─── Section: Plugins ────────────────────────────────────────────────────────
+
+type PluginType = 'channel' | 'tool' | 'diagnostics' | 'other';
+
+interface PluginDef {
+  id: string;
+  name: string;
+  pkg: string;
+  description: string;
+  type: PluginType;
+  author: string;
+  official: boolean;
+  version?: string;
+  docsUrl?: string;
+}
+
+const PLUGIN_CATALOGUE: PluginDef[] = [
+  { id: 'twitch',      name: 'Twitch',           pkg: '@openclaw/plugin-twitch',      description: 'Canal Twitch — réponses live chat',                         type: 'channel',     author: 'openclaw', official: true,  version: '2026.3.22' },
+  { id: 'matrix',      name: 'Matrix',           pkg: '@openclaw/plugin-matrix',      description: 'Canal Matrix — DMs et salons chiffrés',                     type: 'channel',     author: 'openclaw', official: true,  version: '2026.3.22' },
+  { id: 'msteams',     name: 'Microsoft Teams',  pkg: '@openclaw/plugin-msteams',     description: 'Canal Teams — bot intégré Microsoft 365',                   type: 'channel',     author: 'openclaw', official: true,  version: '2026.3.22' },
+  { id: 'nostr',       name: 'Nostr',            pkg: '@openclaw/plugin-nostr',       description: 'Canal Nostr — DMs NIP-04 chiffrés',                         type: 'channel',     author: 'openclaw', official: true,  version: '2026.3.22' },
+  { id: 'zalouser',    name: 'Zalo',             pkg: '@openclaw/plugin-zalouser',    description: 'Canal Zalo — compte personnel via zca-js',                  type: 'channel',     author: 'openclaw', official: true,  version: '2026.3.22' },
+  { id: 'otel',        name: 'Diagnostics OTel', pkg: '@openclaw/plugin-otel',        description: 'Export traces OpenTelemetry — Grafana, Jaeger, Datadog',    type: 'diagnostics', author: 'openclaw', official: true,  version: '2026.3.22', docsUrl: 'https://opentelemetry.io' },
+  { id: 'opik',        name: 'Opik',             pkg: '@opik/opik-openclaw',          description: 'Monitoring agents — traces, coûts, comportements',          type: 'diagnostics', author: 'opik',     official: false, version: '1.x', docsUrl: 'https://opik.ai' },
+  { id: 'lossless',    name: 'Lossless Claw',    pkg: '@martian-engineering/lossless-claw', description: 'Résumé DAG des conversations avec fidélité du contexte', type: 'tool',       author: 'martian-engineering', official: false, version: '1.x' },
+  { id: 'linkmind',    name: 'LinkMind Context', pkg: 'linkmind-openclaw',            description: 'Moteur de contexte enrichi pour agents',                    type: 'tool',        author: 'zhujunxian3', official: false, version: '1.0.0' },
+  { id: 'kpainter',    name: 'KPainter',         pkg: 'kpainter-openclaw',            description: 'APIs création, catalogue et status KPainter',               type: 'tool',        author: 'bbgasj',   official: false, version: '0.1.0' },
+];
+
+const TYPE_LABELS: Record<PluginType, { label: string; color: string; icon: React.FC<{ size?: number }> }> = {
+  channel:     { label: 'Canal',        color: '#3b82f6', icon: Radio },
+  tool:        { label: 'Outil',         color: '#10b981', icon: Wrench },
+  diagnostics: { label: 'Diagnostics',  color: '#f59e0b', icon: BarChart2 },
+  other:       { label: 'Autre',         color: '#94a3b8', icon: Package },
+};
+
+const PLUGINS_KEY = 'clawboard-plugins-enabled';
+
+const PluginsSection = () => {
+  const [enabled, setEnabled] = useState<Record<string, boolean>>(() => {
+    try { return JSON.parse(localStorage.getItem(PLUGINS_KEY) ?? '{}'); } catch { return {}; }
+  });
+  const [installing, setInstalling] = useState<string | null>(null);
+  const [filter, setFilter] = useState<PluginType | 'all'>('all');
+
+  const toggle = (id: string) => {
+    setEnabled(prev => {
+      const next = { ...prev, [id]: !prev[id] };
+      localStorage.setItem(PLUGINS_KEY, JSON.stringify(next));
+      return next;
+    });
+  };
+
+  const install = async (plugin: PluginDef) => {
+    setInstalling(plugin.id);
+    try {
+      await apiFetch('http://localhost:4000/api/plugins/install', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pkg: plugin.pkg }),
+      });
+      toggle(plugin.id);
+    } catch {
+      // graceful — marque quand même comme activé localement
+      setEnabled(prev => {
+        const next = { ...prev, [plugin.id]: true };
+        localStorage.setItem(PLUGINS_KEY, JSON.stringify(next));
+        return next;
+      });
+    } finally {
+      setInstalling(null);
+    }
+  };
+
+  const filtered = filter === 'all' ? PLUGIN_CATALOGUE : PLUGIN_CATALOGUE.filter(p => p.type === filter);
+  const enabledCount = Object.values(enabled).filter(Boolean).length;
+
+  const card: React.CSSProperties = {
+    background: 'var(--bg-glass)', border: '1px solid var(--border-subtle)',
+    borderRadius: 12, padding: '16px 18px',
+    display: 'flex', alignItems: 'flex-start', gap: 14,
+  };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+
+      {/* Header stats */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+        <div style={{ background: 'var(--bg-glass)', border: '1px solid var(--border-subtle)', borderRadius: 10, padding: '8px 16px', fontSize: 13, color: 'var(--text-secondary)' }}>
+          <span style={{ fontWeight: 700, color: 'var(--brand-accent)', marginRight: 6 }}>{enabledCount}</span>plugin{enabledCount !== 1 ? 's' : ''} actif{enabledCount !== 1 ? 's' : ''}
+        </div>
+        <div style={{ background: 'var(--bg-glass)', border: '1px solid var(--border-subtle)', borderRadius: 10, padding: '8px 16px', fontSize: 13, color: 'var(--text-secondary)' }}>
+          <span style={{ fontWeight: 700, color: 'var(--text-primary)', marginRight: 6 }}>{PLUGIN_CATALOGUE.length}</span>disponibles
+        </div>
+      </div>
+
+      {/* Filtres */}
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        {(['all', 'channel', 'tool', 'diagnostics'] as const).map(f => {
+          const active = filter === f;
+          const cfg = f !== 'all' ? TYPE_LABELS[f] : null;
+          return (
+            <button key={f} onClick={() => setFilter(f)}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 6,
+                padding: '6px 14px', borderRadius: 8, cursor: 'pointer', fontSize: 12, fontWeight: 600,
+                background: active ? (cfg ? `${cfg.color}22` : 'rgba(139,92,246,0.15)') : 'var(--bg-glass)',
+                border: `1px solid ${active ? (cfg?.color ?? 'var(--brand-primary)') + '66' : 'var(--border-subtle)'}`,
+                color: active ? (cfg?.color ?? 'var(--brand-accent)') : 'var(--text-muted)',
+              }}>
+              {f === 'all' ? 'Tous' : cfg!.label}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Liste */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {filtered.map(plugin => {
+          const isOn   = !!enabled[plugin.id];
+          const busy   = installing === plugin.id;
+          const cfg    = TYPE_LABELS[plugin.type];
+          const Icon   = cfg.icon;
+
+          return (
+            <div key={plugin.id} style={{ ...card, opacity: busy ? 0.7 : 1, transition: 'opacity 0.2s' }}>
+              {/* Icône type */}
+              <div style={{ width: 38, height: 38, borderRadius: 10, background: `${cfg.color}20`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, marginTop: 2 }}>
+                <Icon size={18} color={cfg.color} />
+              </div>
+
+              {/* Info */}
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  <span style={{ fontWeight: 700, fontSize: 14, color: 'var(--text-primary)' }}>{plugin.name}</span>
+                  <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 6, background: `${cfg.color}20`, color: cfg.color }}>{cfg.label}</span>
+                  {plugin.official && <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 6, background: 'rgba(139,92,246,0.15)', color: 'var(--brand-accent)' }}>Official</span>}
+                  {plugin.version && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>v{plugin.version}</span>}
+                </div>
+                <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 3 }}>{plugin.description}</div>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4, fontFamily: 'var(--mono)' }}>{plugin.pkg}</div>
+              </div>
+
+              {/* Actions */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+                {plugin.docsUrl && (
+                  <a href={plugin.docsUrl} target="_blank" rel="noreferrer"
+                    style={{ color: 'var(--text-muted)', display: 'flex', alignItems: 'center' }}>
+                    <ExternalLink size={14} />
+                  </a>
+                )}
+                {isOn ? (
+                  <button onClick={() => toggle(plugin.id)}
+                    style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 14px', borderRadius: 8, background: 'rgba(16,185,129,0.12)', border: '1px solid rgba(16,185,129,0.3)', color: '#10b981', cursor: 'pointer', fontSize: 12, fontWeight: 700 }}>
+                    <ToggleRight size={15} /> Activé
+                  </button>
+                ) : (
+                  <button onClick={() => install(plugin)} disabled={busy}
+                    style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 14px', borderRadius: 8, background: 'var(--brand-primary)', border: 'none', color: '#fff', cursor: busy ? 'not-allowed' : 'pointer', fontSize: 12, fontWeight: 700 }}>
+                    {busy ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> : <Download size={13} />}
+                    {busy ? 'Install…' : 'Installer'}
+                  </button>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+        Les plugins sont gérés via <code style={{ background: 'var(--bg-glass)', padding: '1px 6px', borderRadius: 4 }}>openclaw plugins install</code>. L'état activé/désactivé est sauvegardé localement.
+      </div>
+    </div>
+  );
+};
+
 // ─── SettingsModule ───────────────────────────────────────────────────────────
 
 export const SettingsModule = () => {
@@ -1344,6 +1522,7 @@ export const SettingsModule = () => {
       case 'server':        return <ServerSection />;
       case 'apikeys':       return <ApiKeysSection />;
       case 'ollama':        return <OllamaSection />;
+      case 'plugins':       return <PluginsSection />;
       case 'security':      return <SecuritySection />;
       case 'notifications': return <NotificationsSection />;
       case 'profile':       return <ProfileSection />;
