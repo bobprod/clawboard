@@ -1,6 +1,10 @@
 import http from 'http';
 import os from 'os';
 import crypto from 'crypto';
+import { readFileSync, existsSync, statSync } from 'fs';
+import { join as pathJoin, extname, dirname } from 'path';
+import { fileURLToPath } from 'url';
+import { spawn } from 'child_process';
 import pool, { checkConnection } from './src/db/client.js';
 import { pub as redisClient, connectRedis, cacheGet, cacheSet, cacheDel } from './src/lib/redis.js';
 
@@ -15,7 +19,7 @@ if (!KEK_HEX) console.warn('[SECURITY] CLAWBOARD_KEK not set — API keys stored
 
 // ─── Security helpers ─────────────────────────────────────────────────────────
 
-const PUBLIC_PREFIXES = ['/api/ping', '/api/vitals', '/api/quota', '/api/logs/', '/api/auth/login'];
+const PUBLIC_PREFIXES = ['/api/ping', '/api/health', '/api/vitals', '/api/quota', '/api/logs/', '/api/auth/login'];
 
 function checkAuth(req) {
   if (!SECRET) return true;
@@ -864,8 +868,114 @@ const server = http.createServer((req, res) => {
     });
   };
 
-  // ── Ping
-  if (path === '/api/ping') return json(200, { ok: true, ts: Date.now() });
+  // ── Ping / Health
+  if (path === '/api/ping')   return json(200, { ok: true, ts: Date.now() });
+  if (path === '/api/health') return json(200, { status: 'ok', ts: Date.now(), db: 'postgres', version: '1.0.0' });
+
+  // ── Proxy ping (pour éviter CORS dans CollaborationModule) ──────────────────
+  if (path === '/api/proxy-ping' && req.method === 'POST') {
+    body(async ({ url, apiKey }) => {
+      if (!url) return json(400, { error: 'url required' });
+      try {
+        const headers = { 'Content-Type': 'application/json' };
+        if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
+        const r = await fetch(url, { headers, signal: AbortSignal.timeout(5000) });
+        let data = {};
+        try { data = await r.json(); } catch (_) {}
+        json(r.ok ? 200 : 502, { ok: r.ok, status: r.status, data });
+      } catch (e) { json(502, { ok: false, error: e.message }); }
+    });
+    return;
+  }
+
+  // ── Ollama management ────────────────────────────────────────────────────────
+  const OLLAMA = process.env.OLLAMA_HOST || 'http://localhost:11434';
+
+  if (path === '/api/ollama/status' && req.method === 'GET') {
+    (async () => {
+      try {
+        const r = await fetch(`${OLLAMA}/api/version`, { signal: AbortSignal.timeout(2000) });
+        if (!r.ok) return json(200, { running: false });
+        const d = await r.json();
+        json(200, { running: true, version: d.version });
+      } catch { json(200, { running: false }); }
+    })();
+    return;
+  }
+
+  if (path === '/api/ollama/models' && req.method === 'GET') {
+    (async () => {
+      try {
+        const r = await fetch(`${OLLAMA}/api/tags`, { signal: AbortSignal.timeout(3000) });
+        if (!r.ok) return json(503, { error: 'Ollama unreachable' });
+        const d = await r.json();
+        json(200, { models: d.models || [] });
+      } catch (e) { json(503, { error: e.message }); }
+    })();
+    return;
+  }
+
+  if (path === '/api/ollama/pull' && req.method === 'POST') {
+    body(async ({ name }) => {
+      if (!name) return json(400, { error: 'name required' });
+      try {
+        const r = await fetch(`${OLLAMA}/api/pull`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, stream: true }),
+        });
+        res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' });
+        const reader = r.body.getReader();
+        const dec = new TextDecoder();
+        let buf = '';
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += dec.decode(value, { stream: true });
+          const lines = buf.split('\n'); buf = lines.pop();
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            try { res.write(`data: ${line}\n\n`); } catch (_) {}
+          }
+        }
+        res.write('data: {"status":"done"}\n\n');
+        res.end();
+      } catch (e) { try { json(503, { error: e.message }); } catch (_) {} }
+    });
+    return;
+  }
+
+  if (path.startsWith('/api/ollama/models/') && req.method === 'DELETE') {
+    const modelName = decodeURIComponent(path.slice('/api/ollama/models/'.length));
+    (async () => {
+      try {
+        const r = await fetch(`${OLLAMA}/api/delete`, {
+          method: 'DELETE', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: modelName }),
+        });
+        r.ok ? json(200, { ok: true }) : json(503, { error: 'Delete failed' });
+      } catch (e) { json(503, { error: e.message }); }
+    })();
+    return;
+  }
+
+  if (path === '/api/ollama/start' && req.method === 'POST') {
+    (async () => {
+      try {
+        const proc = spawn('ollama', ['serve'], { detached: true, stdio: 'ignore', shell: true });
+        proc.unref();
+        let started = false;
+        for (let i = 0; i < 6; i++) {
+          await new Promise(r => setTimeout(r, 500));
+          try {
+            const r = await fetch('http://localhost:11434/api/version', { signal: AbortSignal.timeout(1000) });
+            if (r.ok) { started = true; break; }
+          } catch { /* still starting */ }
+        }
+        json(200, { ok: started, message: started ? 'Ollama démarré' : 'Démarrage en cours…' });
+      } catch (e) { json(500, { ok: false, error: e.message }); }
+    })();
+    return;
+  }
 
   // ── SSE streams
   if (path === '/api/vitals') { sse(sseClients.vitals); res.write(`data: ${JSON.stringify(getVitals())}\n\n`); return; }
@@ -1601,6 +1711,33 @@ const server = http.createServer((req, res) => {
       message: 'openclaw TUI requires NemoClaw to be installed locally. Use the Agent Chat module instead.',
     });
     return;
+  }
+
+  // ─── Static files (production — sert dist/ si present) ──────────────────────
+  {
+    const __dir = dirname(fileURLToPath(import.meta.url));
+    const distDir = pathJoin(__dir, 'dist');
+    if (existsSync(distDir)) {
+      const MIME = {
+        '.html': 'text/html', '.js': 'application/javascript', '.mjs': 'application/javascript',
+        '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png',
+        '.jpg': 'image/jpeg', '.ico': 'image/x-icon', '.json': 'application/json',
+        '.woff2': 'font/woff2', '.woff': 'font/woff', '.ttf': 'font/ttf',
+        '.webp': 'image/webp', '.gz': 'application/gzip',
+      };
+      let filePath = pathJoin(distDir, path === '/' ? 'index.html' : path);
+      if (!existsSync(filePath) || statSync(filePath).isDirectory()) {
+        filePath = pathJoin(distDir, 'index.html');
+      }
+      if (existsSync(filePath)) {
+        const ext = extname(filePath).toLowerCase();
+        const mime = MIME[ext] || 'application/octet-stream';
+        const data = readFileSync(filePath);
+        res.writeHead(200, { 'Content-Type': mime, 'Cache-Control': ext === '.html' ? 'no-cache' : 'public, max-age=31536000' });
+        res.end(data);
+        return;
+      }
+    }
   }
 
   res.writeHead(404); res.end('Not found');

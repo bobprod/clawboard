@@ -58,7 +58,7 @@ export function ModelCostBreakdown() {
   const [period,   setPeriod]   = useState<Period>('30d');
 
   useEffect(() => {
-    apiFetch(`${BASE}/api/archives`).then(r => r.json()).then(setArchives).catch(() => {});
+    apiFetch(`${BASE}/api/archives`).then(r => r.json()).then(d => setArchives(Array.isArray(d) ? d : (d.archives ?? d.data ?? []))).catch(() => {});
   }, []);
 
   const cutoff = cutoffFor(period);

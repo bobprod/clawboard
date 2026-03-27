@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { Dropdown } from './Dropdown';
 import { TasksTour, resetTasksTour } from './TasksTour';
+import { TaskChatDrawer, ChatTriggerBtn, useTaskChat } from './TaskChatDrawer';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -293,6 +294,7 @@ function TabTaches({ tasks, onSelect }: { tasks: Task[]; onSelect: (id: string) 
   const [view, setView] = useState<'list' | 'kanban'>('list');
   const [search, setSearch] = useState('');
   const [replayingId, setReplayingId] = useState<string | null>(null);
+  const { chatCtx, openChat, closeChat } = useTaskChat();
 
   const handleClone = (task: Task) => {
     const t = task as any;
@@ -330,6 +332,7 @@ function TabTaches({ tasks, onSelect }: { tasks: Task[]; onSelect: (id: string) 
     ].some(s => s.toLowerCase().includes(search.toLowerCase())));
 
   return (
+    <>
     <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
       {/* Search bar */}
       <div data-tour="tasks-search" style={{ position: 'relative' }}>
@@ -467,6 +470,18 @@ function TabTaches({ tasks, onSelect }: { tasks: Task[]; onSelect: (id: string) 
 
                 {/* Row actions */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }} onClick={e => e.stopPropagation()}>
+                  <ChatTriggerBtn
+                    ctx={{
+                      taskId:   task.id,
+                      taskName: name,
+                      agent:    agent || 'main',
+                      skill,
+                      llmModel: (task as any).llmModel ?? task.llmMode ?? '',
+                      status:   task.status,
+                      module:   'task',
+                    }}
+                    onOpen={openChat}
+                  />
                   {task.status === 'failed' && (
                     <button
                       onClick={() => handleReplay(task)}
@@ -501,6 +516,9 @@ function TabTaches({ tasks, onSelect }: { tasks: Task[]; onSelect: (id: string) 
         </div>
       )}
     </div>
+
+    <TaskChatDrawer ctx={chatCtx} onClose={closeChat} />
+    </>
   );
 }
 
@@ -535,7 +553,7 @@ function TabModeles() {
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    apiFetch(`${BASE}/api/modeles`).then(r => r.json()).then(setModeles).catch(() => {});
+    apiFetch(`${BASE}/api/modeles`).then(r => r.json()).then(d => setModeles(Array.isArray(d) ? d : [])).catch(() => {});
     // Fetch archives to compute last-exec per model
     apiFetch(`${BASE}/api/archives`).then(r => r.json()).then((archives: ArchiveEntry[]) => {
       const map: Record<string, ArchiveEntry> = {};
@@ -757,7 +775,7 @@ function TabRecurrences() {
   const [failedModeleIds, setFailedModeleIds] = useState<Set<string>>(new Set());
 
   useEffect(() => {
-    apiFetch(`${BASE}/api/recurrences`).then(r => r.json()).then(setRecurrences).catch(() => {});
+    apiFetch(`${BASE}/api/recurrences`).then(r => r.json()).then(d => setRecurrences(Array.isArray(d) ? d : [])).catch(() => {});
     // Cross-ref: find modeleIds whose last archive entry was a failure
     apiFetch(`${BASE}/api/archives`).then(r => r.json()).then((archives: ArchiveEntry[]) => {
       const lastByModele: Record<string, ArchiveEntry> = {};

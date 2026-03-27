@@ -35,7 +35,7 @@ export const SkillsModule = () => {
   const [form, setForm]               = useState({ name: '', desc: '', version: '1.0.0', source: 'local', content: '' });
 
   useEffect(() => {
-    apiFetch(`${BASE}/api/skills`).then(r => r.json()).then(setSkills).catch(() => {});
+    apiFetch(`${BASE}/api/skills`).then(r => r.json()).then(d => setSkills(Array.isArray(d) ? d : [])).catch(() => {});
   }, []);
 
   const showMsg = (msg: string) => { setToast(msg); setTimeout(() => setToast(null), 3000); };

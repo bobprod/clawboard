@@ -6,7 +6,7 @@ import {
   ArrowLeft, Save, Play, Plus, Minus,
   ToggleLeft, ToggleRight, PenLine, Loader2, HelpCircle,
   BookmarkPlus, AlertTriangle, AlertCircle, Info, X, RotateCcw,
-  QrCode, RefreshCw, Copy, CheckCircle2, Link2,
+  QrCode, RefreshCw, Copy, CheckCircle2, Link2, Send,
 } from 'lucide-react';
 import { TaskCreatorTour, resetTaskCreatorTour } from './TaskCreatorTour';
 
@@ -64,7 +64,7 @@ function QrPairingModal({
         canal === 'telegram'
           ? `https://t.me/nemoclaw_bot?start=${token}`
           : canal === 'discord'
-          ? `https://discord.com/oauth2/authorize?client_id=1234567890&scope=bot&state=${token}`
+          ? `https://discord.com/oauth2/authorize?client_id=${import.meta.env.VITE_DISCORD_CLIENT_ID ?? 'DISCORD_CLIENT_ID_NON_CONFIGURE'}&scope=bot&state=${token}`
           : `https://clawboard.local/pair/${token}`;
       setData({
         token,
@@ -287,6 +287,45 @@ function QrPairingModal({
   );
 }
 
+// ── Webhook Test Button ──────────────────────────────────────────────────────
+function WebhookTestButton({ url }: { url: string }) {
+  const [status, setStatus] = useState<'idle' | 'sending' | 'ok' | 'error'>('idle');
+
+  const handleTest = async () => {
+    if (!url.startsWith('https://')) { setStatus('error'); setTimeout(() => setStatus('idle'), 2500); return; }
+    setStatus('sending');
+    try {
+      const isDiscord = url.includes('discord.com/api/webhooks');
+      const body = isDiscord
+        ? JSON.stringify({ content: '✅ **Clawboard** — connexion webhook OK !' })
+        : JSON.stringify({ text: '✅ Clawboard — connexion webhook OK !' });
+      const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body });
+      setStatus(res.ok ? 'ok' : 'error');
+    } catch { setStatus('error'); }
+    setTimeout(() => setStatus('idle'), 3000);
+  };
+
+  const cfg = {
+    idle:    { label: 'Tester',   color: '#5865F2', bg: 'rgba(88,101,242,0.12)',  border: 'rgba(88,101,242,0.3)'  },
+    sending: { label: '…',        color: '#94a3b8', bg: 'var(--bg-glass)',         border: 'var(--border-subtle)'  },
+    ok:      { label: 'Envoyé !', color: '#10b981', bg: 'rgba(16,185,129,0.12)',   border: 'rgba(16,185,129,0.3)'  },
+    error:   { label: 'Erreur',   color: '#ef4444', bg: 'rgba(239,68,68,0.12)',    border: 'rgba(239,68,68,0.3)'   },
+  }[status];
+
+  return (
+    <button type="button" onClick={handleTest} disabled={status === 'sending'} title="Envoyer un message test"
+      style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 5, padding: '9px 13px', borderRadius: 8,
+        cursor: status === 'sending' ? 'wait' : 'pointer', background: cfg.bg,
+        border: `1px solid ${cfg.border}`, color: cfg.color, fontSize: 12, fontWeight: 600,
+        whiteSpace: 'nowrap', transition: 'all 0.2s' }}>
+      {status === 'sending' ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} />
+        : status === 'ok'   ? <CheckCircle2 size={13} />
+        : <Send size={13} />}
+      {cfg.label}
+    </button>
+  );
+}
+
 const inputStyle: React.CSSProperties = {
   width: '100%', padding: '9px 12px', borderRadius: 8,
   background: 'var(--bg-glass)', border: '1px solid var(--border-subtle)',
@@ -368,8 +407,12 @@ export const TaskCreator = () => {
   const [tourForceRun,       setTourForceRun]       = useState(false);
   const [saveAsModel,        setSaveAsModel]        = useState(false);
   const [showDraftBanner,    setShowDraftBanner]    = useState(false);
+  const [pendingDraft,       setPendingDraft]       = useState<PrefillData | null>(null);
   const [confirmCancel,      setConfirmCancel]      = useState(false);
   const [showQrModal,        setShowQrModal]        = useState(false);
+  const [connMode,           setConnMode]           = useState<'qr' | 'webhook'>('qr');
+  const [destError,          setDestError]          = useState(false);
+  const [modelError,         setModelError]         = useState(false);
 
   // ── Restore draft or prefill on mount ─────────────────────────────────────
   useEffect(() => {
@@ -396,17 +439,8 @@ export const TaskCreator = () => {
     try {
       const draft: PrefillData = JSON.parse(raw);
       if (draft.name || draft.instructions) {
-        // Restore silently and show banner
-        if (draft.name)               setName(draft.name);
-        if (draft.instructions)       setInstructions(draft.instructions);
-        if (draft.skillName)          setSkillName(draft.skillName ?? '');
-        if (draft.llmModel)           setLlmModel(draft.llmModel ?? '');
-        if (draft.agent)              setAgent(draft.agent ?? 'main');
-        if (draft.canal)              setCanal(draft.canal ?? 'telegram');
-        if (draft.destinataire)       setDestinataire(draft.destinataire ?? '');
-        if (draft.timeoutMin)         setTimeoutMin(draft.timeoutMin ?? 30);
-        if (draft.objectives?.length) setObjectives(draft.objectives);
-        if (draft.disablePreInstructions !== undefined) setDisablePreInstructions(draft.disablePreInstructions);
+        // Don't restore silently — ask user first
+        setPendingDraft(draft);
         setShowDraftBanner(true);
       }
     } catch { /* draft parse error — ignore */ }
@@ -791,9 +825,34 @@ export const TaskCreator = () => {
               <input value={canal} onChange={e => setCanal(e.target.value)} style={inputStyle} placeholder="discord, telegram…" />
             </Field>
             <Field
-              label={canal === 'telegram' ? 'Chat ID Telegram' : canal === 'discord' ? 'ID Salon Discord' : canal === 'whatsapp' ? 'Numéro WhatsApp' : 'URL Webhook'}
+              label={
+                canal === 'telegram' ? 'Chat ID Telegram' :
+                canal === 'discord'  ? (connMode === 'webhook' ? 'Webhook Discord' : 'ID Salon Discord') :
+                canal === 'whatsapp' ? 'Numéro WhatsApp' : 'URL Webhook'
+              }
               hint="Requis pour que l'agent puisse envoyer ses résultats"
             >
+              {/* Mode selector pour Discord */}
+              {canal === 'discord' && (
+                <div style={{ display: 'flex', gap: 4, marginBottom: 6 }}>
+                  {(['qr', 'webhook'] as const).map(m => (
+                    <button
+                      key={m}
+                      type="button"
+                      onClick={() => { setConnMode(m); setDestinataire(''); }}
+                      style={{
+                        padding: '3px 10px', borderRadius: 6, fontSize: 11, fontWeight: 600, cursor: 'pointer',
+                        background: connMode === m ? 'rgba(88,101,242,0.18)' : 'var(--bg-glass)',
+                        border: `1px solid ${connMode === m ? 'rgba(88,101,242,0.45)' : 'var(--border-subtle)'}`,
+                        color: connMode === m ? '#5865F2' : 'var(--text-muted)',
+                        transition: 'all 0.15s',
+                      }}
+                    >
+                      {m === 'qr' ? '🔗 QR / Bot' : '🪝 Webhook'}
+                    </button>
+                  ))}
+                </div>
+              )}
               <div style={{ display: 'flex', gap: 8 }}>
                 <input
                   value={destinataire}
@@ -804,29 +863,32 @@ export const TaskCreator = () => {
                   }}
                   placeholder={
                     canal === 'telegram' ? '@username ou -100xxxxx' :
-                    canal === 'discord'  ? '1234567890…' :
+                    canal === 'discord'  ? (connMode === 'webhook' ? 'https://discord.com/api/webhooks/ID/TOKEN' : '1234567890…') :
                     canal === 'whatsapp' ? '+336XXXXXXXX' :
                     'https://votre-serveur.com/webhook'
                   }
                 />
-                {(canal === 'telegram' || canal === 'discord') && (
+                {/* QR Coupler — Telegram ou Discord mode qr */}
+                {(canal === 'telegram' || (canal === 'discord' && connMode === 'qr')) && (
                   <button
                     type="button"
                     onClick={() => setShowQrModal(true)}
                     title={`Coupler via QR code ${canal}`}
                     style={{
-                      flexShrink: 0,
-                      display: 'flex', alignItems: 'center', gap: 5,
+                      flexShrink: 0, display: 'flex', alignItems: 'center', gap: 5,
                       padding: '9px 13px', borderRadius: 8, cursor: 'pointer',
                       background: canal === 'telegram' ? 'rgba(44,165,224,0.12)' : 'rgba(88,101,242,0.12)',
                       border: `1px solid ${canal === 'telegram' ? 'rgba(44,165,224,0.3)' : 'rgba(88,101,242,0.3)'}`,
                       color: canal === 'telegram' ? '#2CA5E0' : '#5865F2',
-                      fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap',
-                      transition: 'all 0.2s',
+                      fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap', transition: 'all 0.2s',
                     }}
                   >
                     <QrCode size={14} /> Coupler
                   </button>
+                )}
+                {/* Test Webhook — Discord mode webhook ou canal webhook */}
+                {((canal === 'discord' && connMode === 'webhook') || canal === 'webhook') && (
+                  <WebhookTestButton url={destinataire} />
                 )}
               </div>
             </Field>

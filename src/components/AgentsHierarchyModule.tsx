@@ -1,12 +1,10 @@
 // React is used implicitly via JSX transform
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, createContext, useContext } from 'react';
 import {
   ReactFlow,
   MiniMap,
   Controls,
   Background,
-  useNodesState,
-  useEdgesState,
   Handle,
   Position,
 } from '@xyflow/react';
@@ -14,8 +12,13 @@ import type { Node, Edge } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { Network, Server, Play, Square, Activity, Bot, RefreshCw, Loader2, FileText } from 'lucide-react';
 import { apiFetch } from '../lib/apiFetch';
+import { TaskChatDrawer, useTaskChat } from './TaskChatDrawer';
+import type { TaskChatContext } from './TaskChatDrawer';
 
 const BASE = 'http://localhost:4000';
+
+// ─── Context pour openChat (évite de passer la fn dans node data ReactFlow) ───
+const AgentChatCtx = createContext<((ctx: TaskChatContext) => void) | null>(null);
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -44,6 +47,7 @@ interface AgentNodeData {
 
 const AgentNode = ({ data }: { data: AgentNodeData }) => {
   const isRunning = data.status === 'active';
+  const openChat = useContext(AgentChatCtx);
 
   return (
     <div style={{
@@ -91,6 +95,19 @@ const AgentNode = ({ data }: { data: AgentNodeData }) => {
       </div>
 
       <div style={{ paddingTop: '10px', borderTop: '1px solid var(--border-subtle)', display: 'flex', gap: '8px' }}>
+        {openChat && (
+          <button
+            onClick={() => openChat({ taskId: data.agentId, taskName: data.label, agent: data.label, llmModel: data.model, status: data.status, module: 'agent' })}
+            title="Chat avec cet agent"
+            style={{
+              padding: '6px 8px', borderRadius: '6px', border: '1px solid var(--border-subtle)',
+              background: 'var(--bg-glass)', color: 'var(--brand-accent)', fontSize: '0.8rem',
+              cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+            }}
+          >
+            💬
+          </button>
+        )}
         <button
           onClick={() => window.open(`/tasks?agent=${data.agentId}`, '_self')}
           style={{
@@ -127,6 +144,7 @@ const AgentNode = ({ data }: { data: AgentNodeData }) => {
 
 const nodeTypes = { agentNode: AgentNode };
 
+
 // ─── Mock fallback (endpoint absent) ─────────────────────────────────────────
 
 const MOCK_AGENTS: Agent[] = [
@@ -161,12 +179,11 @@ function agentsToFlow(agents: Agent[], onToggle: AgentNodeData['onToggle'], togg
 // ─── AgentsHierarchyModule ────────────────────────────────────────────────────
 
 export const AgentsHierarchyModule = () => {
-  const [agents, setAgents]           = useState<Agent[]>([]);
-  const [loading, setLoading]         = useState(true);
-  const [demo, setDemo]               = useState(false);
-  const [toggling, setToggling]       = useState<Set<string>>(new Set());
-  const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
-  const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
+  const [agents, setAgents]     = useState<Agent[]>([]);
+  const [loading, setLoading]   = useState(true);
+  const [demo, setDemo]         = useState(false);
+  const [toggling, setToggling] = useState<Set<string>>(new Set());
+  const { chatCtx, openChat, closeChat } = useTaskChat();
 
   const fetchAgents = useCallback(async () => {
     setLoading(true);
@@ -205,13 +222,6 @@ export const AgentsHierarchyModule = () => {
       setToggling(prev => { const s = new Set(prev); s.delete(id); return s; });
     }
   }, []);
-
-  // Rebuild ReactFlow nodes/edges whenever agents or toggling changes
-  useEffect(() => {
-    const { nodes: n, edges: e } = agentsToFlow(agents, handleToggle, toggling);
-    setNodes(n);
-    setEdges(e);
-  }, [agents, toggling, handleToggle, setNodes, setEdges]);
 
   const activeCount  = agents.filter(a => a.status === 'active').length;
   const offlineCount = agents.filter(a => a.status === 'offline').length;
@@ -275,24 +285,30 @@ export const AgentsHierarchyModule = () => {
           <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', gap: 10 }}>
             <Loader2 size={20} style={{ animation: 'spin 1s linear infinite' }} /> Chargement des agents…
           </div>
-        ) : (
-          <ReactFlow
-            nodes={nodes}
-            edges={edges}
-            onNodesChange={onNodesChange}
-            onEdgesChange={onEdgesChange}
-            nodeTypes={nodeTypes}
-            fitView
-            colorMode="dark"
-            attributionPosition="bottom-right"
-          >
-            <Controls style={{ background: 'var(--bg-surface)', border: '1px solid var(--border-subtle)' }} />
-            <MiniMap style={{ background: 'var(--bg-surface)' }} maskColor="rgba(0,0,0,0.5)" nodeColor="var(--brand-primary)" />
-            <Background gap={16} size={1} color="var(--border-subtle)" />
-          </ReactFlow>
-        )}
+        ) : (() => {
+          const { nodes: dn, edges: de } = agentsToFlow(agents, handleToggle, toggling);
+          const flowKey = agents.map(a => `${a.id}:${a.status}`).join('|');
+          return (
+            <AgentChatCtx.Provider value={openChat}>
+              <ReactFlow
+                key={flowKey}
+                defaultNodes={dn}
+                defaultEdges={de}
+                nodeTypes={nodeTypes}
+                fitView
+                colorMode="dark"
+                attributionPosition="bottom-right"
+              >
+                <Controls style={{ background: 'var(--bg-surface)', border: '1px solid var(--border-subtle)' }} />
+                <MiniMap style={{ background: 'var(--bg-surface)' }} maskColor="rgba(0,0,0,0.5)" nodeColor="var(--brand-primary)" />
+                <Background gap={16} size={1} color="var(--border-subtle)" />
+              </ReactFlow>
+            </AgentChatCtx.Provider>
+          );
+        })()}
       </div>
 
+      <TaskChatDrawer ctx={chatCtx} onClose={closeChat} />
       <style>{`@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
     </div>
   );

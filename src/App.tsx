@@ -40,6 +40,7 @@ import {
   TerminalSquare,
   LayoutDashboard,
   ShieldCheck,
+  Globe,
   Network,
   BrainCircuit,
   ToyBrick,
@@ -198,7 +199,7 @@ const Sidebar = () => (
       <NavLink to="/chat" icon={MessageSquare} tourId="nav-chat">Chat avec Lia</NavLink>
       <NavLink to="/scheduler" icon={CalendarClock} tourId="nav-scheduler">Planificateur</NavLink>
       <NavLink to="/security" icon={ShieldCheck} tourId="nav-security">Sécurité & Scan</NavLink>
-      <NavLink to="/collaborations" icon={Network} tourId="nav-collaborations">Collaborations</NavLink>
+      <NavLink to="/collaborations" icon={Globe} tourId="nav-collaborations">Collaborations</NavLink>
       <NavLink to="/agents" icon={Network} tourId="nav-agents">Agents Hierarchy</NavLink>
       <NavLink to="/memory" icon={BrainCircuit} tourId="nav-memory">Mémoire (QMD)</NavLink>
       <NavLink to="/skills" icon={ToyBrick}>Tâches & Skills</NavLink>

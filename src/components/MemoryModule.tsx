@@ -74,7 +74,7 @@ export const MemoryModule = () => {
     setSyncing(true);
     try {
       const data = await apiFetch(`${BASE}/api/memory`).then(r => r.json());
-      setDocs(data);
+      setDocs(Array.isArray(data) ? data : (data.docs ?? data.data ?? []));
       setLastSync(new Date());
     } catch {}
     setSyncing(false);

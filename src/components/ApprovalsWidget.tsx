@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { ShieldCheck, Clock, Bot, RefreshCw, CheckCheck, XCircle, Info, Wifi, WifiOff } from 'lucide-react';
 import { apiFetch } from '../lib/apiFetch';
+import { TaskChatDrawer, ChatTriggerBtn, useTaskChat } from './TaskChatDrawer';
 
 const BASE = 'http://localhost:4000';
 
@@ -81,14 +82,16 @@ export const ApprovalsWidget = () => {
   const [useMock,   setUseMock]   = useState(false);
   const sseRef = useRef<EventSource | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const { chatCtx, openChat, closeChat } = useTaskChat();
 
   // ── REST fetch (initial load + fallback polling) ─────────────────────────
   const fetchApprovals = useCallback((silent = false) => {
     if (!silent) setLoading(true);
     apiFetch(`${BASE}/api/approvals`)
       .then(r => r.json())
-      .then((data: ApprovalRequest[]) => {
-        setRequests(data);
+      .then((data: any) => {
+        const list: ApprovalRequest[] = Array.isArray(data) ? data : (data.approvals ?? data.data ?? []);
+        setRequests(list);
         setUseMock(false);
         setLoading(false);
       })
@@ -141,7 +144,8 @@ export const ApprovalsWidget = () => {
     // Bulk snapshot (initial state sent by server)
     es.addEventListener('snapshot', (e: MessageEvent) => {
       try {
-        const list: ApprovalRequest[] = JSON.parse(e.data);
+        const raw = JSON.parse(e.data);
+        const list: ApprovalRequest[] = Array.isArray(raw) ? raw : (raw.approvals ?? raw.data ?? []);
         setRequests(list);
         setUseMock(false);
         setLoading(false);
@@ -187,7 +191,8 @@ export const ApprovalsWidget = () => {
     }
   };
 
-  const pending = requests.length;
+  const safeRequests = Array.isArray(requests) ? requests : [];
+  const pending = safeRequests.length;
 
   return (
     <div className="glass-panel p-6" style={{ minHeight: 200 }}>
@@ -250,7 +255,7 @@ export const ApprovalsWidget = () => {
         </div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          {requests.map(req => {
+          {safeRequests.map(req => {
             const riskColor = RISK_COLOR[req.riskLevel];
             const exp = req.expiresAt ? timeLeft(req.expiresAt) : null;
             const isExpired = exp === 'Expiré';
@@ -315,6 +320,14 @@ export const ApprovalsWidget = () => {
 
                   {/* Actions */}
                   <div style={{ display: 'flex', gap: 6, flexShrink: 0, alignItems: 'center' }}>
+                    <ChatTriggerBtn onClick={() => openChat({
+                      taskId: req.taskId,
+                      taskName: req.taskName,
+                      agent: req.agent,
+                      llmModel: req.llmModel,
+                      status: 'approval',
+                      module: 'approval',
+                    })} />
                     {req.payload && (
                       <button
                         onClick={() => setExpanded(isOpen ? null : req.id)}
@@ -389,6 +402,7 @@ export const ApprovalsWidget = () => {
         </div>
       )}
 
+      <TaskChatDrawer ctx={chatCtx} onClose={closeChat} />
       <style>{`
         @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
       `}</style>
