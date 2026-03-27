@@ -143,21 +143,37 @@ function broadcastState() {
 function pollBackendHealth(maxAttempts = 60, intervalMs = 500) {
   return new Promise((resolve, reject) => {
     let attempts = 0;
+    let aborted  = false;
+
+    // Permet d'annuler le poll si le processus backend crash avant d'etre pret
+    const abort = (reason) => { aborted = true; reject(new Error(reason)); };
+
     function tryOnce() {
+      if (aborted) return;
       attempts++;
       const req = httpRequest(
         { hostname: 'localhost', port: BACKEND_PORT, path: '/api/health', method: 'GET', timeout: 400 },
-        res => { if (res.statusCode < 500) resolve(); else schedule(); }
+        res => {
+          // Consomme le body pour eviter de laisser le socket ouvert
+          res.resume();
+          // Exige 200 — evite les faux positifs sur un autre serveur (ex: 401 d'une ancienne instance)
+          if (res.statusCode === 200) resolve();
+          else schedule();
+        }
       );
       req.on('error', schedule);
       req.on('timeout', () => { req.destroy(); schedule(); });
       req.end();
     }
     function schedule() {
-      if (attempts >= maxAttempts) { reject(new Error('Backend timeout apres ' + maxAttempts + ' tentatives')); return; }
+      if (aborted) return;
+      if (attempts >= maxAttempts) { reject(new Error('Backend non disponible apres ' + maxAttempts + ' tentatives')); return; }
       setTimeout(tryOnce, intervalMs);
     }
     tryOnce();
+
+    // Expose abort pour l'annulation externe
+    pollBackendHealth._abort = abort;
   });
 }
 
@@ -219,8 +235,11 @@ function startAll() {
     });
     backendProc.stdout.on('data', d => addLog(d.toString(), 'backend'));
     backendProc.stderr.on('data', d => addLog(d.toString(), 'warn'));
+    // Si le backend crash avant d'etre pret, annule le poll immediatement
     backendProc.on('exit', code => {
-      addLog(`Backend arrete (code ${code ?? '?'})`, 'error');
+      const msg = code === 1 ? 'Backend arrete (code 1) — port occupe ou erreur demarrage' : `Backend arrete (code ${code ?? '?'})`;
+      addLog(msg, 'error');
+      if (pollBackendHealth._abort) pollBackendHealth._abort('Backend crash avant readiness');
       state = 'stopped'; broadcastState();
     });
 
@@ -229,8 +248,9 @@ function startAll() {
     pollBackendHealth().then(() => {
       state = 'running'; broadcastState();
       addLog(`✓ ClawBoard pret → http://localhost:${BACKEND_PORT}`, 'sys');
-    }).catch(() => {
-      addLog('✗ Backend non disponible apres 30s — verifiez les logs.', 'error');
+    }).catch(err => {
+      addLog(`✗ Backend indisponible — ${err.message}`, 'error');
+      addLog('  → Verifiez que le port 4000 est libre et que DATABASE_URL est correct.', 'warn');
       state = 'stopped'; broadcastState();
     });
 
@@ -242,8 +262,12 @@ function startAll() {
     });
     backendProc.stdout.on('data', d => addLog(d.toString(), 'backend'));
     backendProc.stderr.on('data', d => addLog(d.toString(), 'warn'));
+
+    // Si le backend crash avant d'etre pret, annule le poll immediatement
     backendProc.on('exit', code => {
-      addLog(`Backend arrete (code ${code ?? '?'})`, 'error');
+      const msg = code === 1 ? 'Backend arrete (code 1) — port occupe ou erreur demarrage' : `Backend arrete (code ${code ?? '?'})`;
+      addLog(msg, 'error');
+      if (pollBackendHealth._abort) pollBackendHealth._abort('Backend crash avant readiness');
       state = 'stopped'; broadcastState();
     });
 
@@ -259,7 +283,6 @@ function startAll() {
       frontendProc.stdout.on('data', d => {
         const msg = d.toString();
         addLog(msg, 'frontend');
-        // Vite confirme son port dans stdout
         if (msg.includes('Local:') || msg.includes('localhost:')) {
           state = 'running'; broadcastState();
           addLog(`✓ ClawBoard pret → http://localhost:${FRONTEND_PORT}`, 'sys');
@@ -267,8 +290,9 @@ function startAll() {
       });
       frontendProc.stderr.on('data', d => addLog(d.toString(), 'warn'));
       frontendProc.on('exit', code => addLog(`Frontend arrete (code ${code ?? '?'})`, 'error'));
-    }).catch(() => {
-      addLog('✗ Backend non disponible apres 30s — verifiez DATABASE_URL et les logs.', 'error');
+    }).catch(err => {
+      addLog(`✗ Backend indisponible — ${err.message}`, 'error');
+      addLog('  → Verifiez que le port 4000 est libre et que DATABASE_URL est correct.', 'warn');
       state = 'stopped'; broadcastState();
     });
   }
