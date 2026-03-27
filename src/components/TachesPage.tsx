@@ -1031,37 +1031,89 @@ function TabPreInstructions() {
 
 // ─── Tab: Archives ────────────────────────────────────────────────────────────
 
+// ─── Archives status options ──────────────────────────────────────────────────
+
+const ARCHIVE_STATUS_OPTIONS = [
+  { id: 'all'       as const, label: 'Tous',      color: 'var(--text-primary)', bg: 'rgba(255,255,255,0.08)' },
+  { id: 'completed' as const, label: '✓ Succès',  color: '#10b981',             bg: 'rgba(16,185,129,0.15)'  },
+  { id: 'failed'    as const, label: '✕ Échecs',  color: '#ef4444',             bg: 'rgba(239,68,68,0.15)'   },
+  { id: 'running'   as const, label: '⟳ En cours', color: '#3b82f6',             bg: 'rgba(59,130,246,0.15)'  },
+];
+
+const ARCHIVE_PERIOD_OPTIONS = [
+  { id: 'all' as const, label: 'Toutes' },
+  { id: '7d'  as const, label: '7 jours' },
+  { id: '30d' as const, label: '30 jours' },
+  { id: '90d' as const, label: '90 jours' },
+];
+
+type ArchiveStatus = 'all' | 'completed' | 'failed' | 'running';
+type ArchivePeriod = 'all' | '7d' | '30d' | '90d';
+
+const PERIOD_MS: Record<ArchivePeriod, number | null> = {
+  all: null, '7d': 7 * 86400000, '30d': 30 * 86400000, '90d': 90 * 86400000,
+};
+
 function TabArchives() {
-  const [archives, setArchives] = useState<ArchiveEntry[]>([]);
-  const [search, setSearch] = useState('');
-  const [statusFilter, setStatusFilter] = useState<'all' | 'completed' | 'failed'>('all');
+  const [archives, setArchives]       = useState<ArchiveEntry[]>([]);
+  const [search, setSearch]           = useState('');
+  const [statusFilter, setStatusFilter] = useState<ArchiveStatus>('all');
+  const [periodFilter, setPeriodFilter] = useState<ArchivePeriod>('all');
 
   useEffect(() => {
     apiFetch(`${BASE}/api/archives`)
       .then(r => r.json())
-      .then((data: ArchiveEntry[]) => setArchives(data))
+      .then((data: ArchiveEntry[]) => setArchives(Array.isArray(data) ? data : []))
       .catch(() => {});
   }, []);
 
-  const getStatus = (a: ArchiveEntry) => a.exitCode === 0 || a.status === 'ok' || a.status === 'completed' ? 'completed' : 'failed';
+  const getStatus = (a: ArchiveEntry): 'completed' | 'failed' | 'running' => {
+    if (a.status === 'running') return 'running';
+    return a.exitCode === 0 || a.status === 'ok' || a.status === 'completed' ? 'completed' : 'failed';
+  };
+
+  const cutoff = PERIOD_MS[periodFilter];
 
   const filtered = archives
     .filter(a => statusFilter === 'all' || getStatus(a) === statusFilter)
+    .filter(a => {
+      if (!cutoff) return true;
+      const d = new Date(a.startedAt ?? a.date ?? '');
+      return !isNaN(d.getTime()) && Date.now() - d.getTime() <= cutoff;
+    })
     .filter(a => {
       if (!search.trim()) return true;
       const q = search.toLowerCase();
       return [a.taskName ?? a.name ?? '', a.skillName ?? '', a.id].some(s => s.toLowerCase().includes(q));
     });
 
+  // Per-status counts (unaffected by status filter, but respect period + search)
+  const baseForCount = archives
+    .filter(a => {
+      if (!cutoff) return true;
+      const d = new Date(a.startedAt ?? a.date ?? '');
+      return !isNaN(d.getTime()) && Date.now() - d.getTime() <= cutoff;
+    })
+    .filter(a => {
+      if (!search.trim()) return true;
+      const q = search.toLowerCase();
+      return [a.taskName ?? a.name ?? '', a.skillName ?? '', a.id].some(s => s.toLowerCase().includes(q));
+    });
+
+  const counts: Record<ArchiveStatus, number> = {
+    all:       baseForCount.length,
+    completed: baseForCount.filter(a => getStatus(a) === 'completed').length,
+    failed:    baseForCount.filter(a => getStatus(a) === 'failed').length,
+    running:   baseForCount.filter(a => getStatus(a) === 'running').length,
+  };
+
   const exportCSV = () => {
-    const headers = ['ID', 'Tâche', 'Skill', 'Date', 'Durée(s)', 'Tokens', 'Coût', 'LLM', 'Statut'];
+    const headers = ['Tâche', 'Date', 'Durée (s)', 'Tokens', 'Coût', 'LLM', 'Statut'];
     const rows = filtered.map(a => [
-      a.id,
       a.taskName ?? a.name ?? '',
-      a.skillName ?? '',
       new Date(a.startedAt ?? a.date ?? '').toISOString(),
       a.duration,
-      (a.promptTokens ?? 0) + (a.completionTokens ?? a.tokens ?? 0),
+      (a.promptTokens ?? 0) + (a.completionTokens ?? (a.tokens as number | undefined) ?? 0),
       typeof a.cost === 'number' ? a.cost.toFixed(6) : a.cost,
       a.llmModel ?? '',
       getStatus(a),
@@ -1069,27 +1121,34 @@ function TabArchives() {
     const csv = [headers.join(','), ...rows].join('\n');
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url; a.download = `archives-${new Date().toISOString().slice(0,10)}.csv`; a.click();
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `archives-${new Date().toISOString().slice(0, 10)}.csv`;
+    link.click();
     URL.revokeObjectURL(url);
   };
 
+  const hasActiveFilter = statusFilter !== 'all' || periodFilter !== 'all' || search.trim() !== '';
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-      {/* Toolbar */}
-      <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-        {/* Search */}
-        <div style={{ position: 'relative', flex: 1, minWidth: 200 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+
+      {/* ── Row 1 : Search + Export ───────────────────────────────────── */}
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+        <div style={{ position: 'relative', flex: 1 }}>
           <Search size={13} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)', pointerEvents: 'none' }} />
           <input
             value={search}
             onChange={e => setSearch(e.target.value)}
-            placeholder="Rechercher par nom, skill…"
+            placeholder="Rechercher par nom de tâche, skill…"
             style={{
               width: '100%', padding: '8px 12px 8px 30px', borderRadius: 9,
               background: 'var(--bg-glass)', border: '1px solid var(--border-subtle)',
               color: 'var(--text-primary)', fontSize: '0.8rem', outline: 'none', boxSizing: 'border-box',
+              transition: 'border-color 0.2s',
             }}
+            onFocus={e => e.target.style.borderColor = 'var(--brand-accent)'}
+            onBlur={e => e.target.style.borderColor = 'var(--border-subtle)'}
           />
           {search && (
             <button onClick={() => setSearch('')} style={{ position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', display: 'flex' }}>
@@ -1097,34 +1156,71 @@ function TabArchives() {
             </button>
           )}
         </div>
-        {/* Status filter */}
-        <div style={{ display: 'flex', gap: 4, background: 'var(--bg-glass)', padding: '3px', borderRadius: 8, border: '1px solid var(--border-subtle)' }}>
-          {(['all', 'completed', 'failed'] as const).map(s => (
-            <button key={s} onClick={() => setStatusFilter(s)} style={{
-              padding: '5px 12px', borderRadius: 6, border: 'none', cursor: 'pointer',
-              background: statusFilter === s ? (s === 'completed' ? 'rgba(16,185,129,0.15)' : s === 'failed' ? 'rgba(239,68,68,0.15)' : 'rgba(255,255,255,0.08)') : 'transparent',
-              color: statusFilter === s ? (s === 'completed' ? '#10b981' : s === 'failed' ? '#ef4444' : 'var(--text-primary)') : 'var(--text-secondary)',
-              fontSize: '12px', fontWeight: 600, transition: 'all 0.15s',
-            }}>
-              {s === 'all' ? `Tous (${archives.length})` : s === 'completed' ? `✓ Succès (${archives.filter(a => getStatus(a) === 'completed').length})` : `✕ Échecs (${archives.filter(a => getStatus(a) === 'failed').length})`}
-            </button>
-          ))}
-        </div>
-        {/* Export */}
-        <button onClick={exportCSV} disabled={filtered.length === 0} style={{
-          display: 'flex', alignItems: 'center', gap: 6,
-          padding: '7px 14px', borderRadius: 8,
-          background: 'rgba(59,130,246,0.08)', border: '1px solid rgba(59,130,246,0.25)',
-          color: '#3b82f6', cursor: filtered.length === 0 ? 'not-allowed' : 'pointer',
-          fontSize: '12px', fontWeight: 600, opacity: filtered.length === 0 ? 0.5 : 1,
-        }}>
-          <Download size={13} /> Exporter CSV ({filtered.length})
+        <button
+          onClick={exportCSV}
+          disabled={filtered.length === 0}
+          title={`Exporter ${filtered.length} entrée${filtered.length !== 1 ? 's' : ''} en CSV`}
+          style={{
+            display: 'flex', alignItems: 'center', gap: 6,
+            padding: '7px 14px', borderRadius: 8, whiteSpace: 'nowrap',
+            background: 'rgba(59,130,246,0.08)', border: '1px solid rgba(59,130,246,0.25)',
+            color: '#3b82f6', cursor: filtered.length === 0 ? 'not-allowed' : 'pointer',
+            fontSize: '12px', fontWeight: 600, opacity: filtered.length === 0 ? 0.5 : 1,
+            transition: 'all 0.15s',
+          }}
+        >
+          <Download size={13} /> ⬇ Exporter CSV
         </button>
       </div>
 
-      {/* Table */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '0' }}>
-        {/* Table header */}
+      {/* ── Row 2 : Status + Période + compteur ──────────────────────── */}
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+        {/* Status pills */}
+        <div style={{ display: 'flex', gap: 3, background: 'var(--bg-glass)', padding: '3px', borderRadius: 8, border: '1px solid var(--border-subtle)' }}>
+          {ARCHIVE_STATUS_OPTIONS.map(opt => {
+            const active = statusFilter === opt.id;
+            return (
+              <button key={opt.id} onClick={() => setStatusFilter(opt.id)} style={{
+                padding: '5px 11px', borderRadius: 6, border: 'none', cursor: 'pointer',
+                background: active ? opt.bg : 'transparent',
+                color: active ? opt.color : 'var(--text-secondary)',
+                fontSize: '12px', fontWeight: 600, transition: 'all 0.15s', whiteSpace: 'nowrap',
+              }}>
+                {opt.label}{' '}
+                <span style={{ opacity: 0.7, fontSize: '10px' }}>({counts[opt.id]})</span>
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Period pills */}
+        <div style={{ display: 'flex', gap: 3, background: 'var(--bg-glass)', padding: '3px', borderRadius: 8, border: '1px solid var(--border-subtle)' }}>
+          {ARCHIVE_PERIOD_OPTIONS.map(opt => {
+            const active = periodFilter === opt.id;
+            return (
+              <button key={opt.id} onClick={() => setPeriodFilter(opt.id)} style={{
+                padding: '5px 11px', borderRadius: 6, border: 'none', cursor: 'pointer',
+                background: active ? 'rgba(139,92,246,0.15)' : 'transparent',
+                color: active ? 'var(--brand-accent)' : 'var(--text-secondary)',
+                fontSize: '12px', fontWeight: 600, transition: 'all 0.15s', whiteSpace: 'nowrap',
+              }}>
+                {opt.label}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Résultat count */}
+        {hasActiveFilter && (
+          <span style={{ fontSize: '12px', color: 'var(--text-muted)', marginLeft: 'auto' }}>
+            {filtered.length} résultat{filtered.length !== 1 ? 's' : ''} sur {archives.length}
+          </span>
+        )}
+      </div>
+
+      {/* ── Table ─────────────────────────────────────────────────────── */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+        {/* Header */}
         <div style={{
           display: 'grid', gridTemplateColumns: '2fr 1fr 80px 80px 80px 80px 120px',
           gap: '12px', padding: '10px 20px',
@@ -1143,31 +1239,46 @@ function TabArchives() {
 
         {filtered.length === 0 && (
           <div style={{ padding: '40px', textAlign: 'center', color: 'var(--text-secondary)', opacity: 0.5 }}>
-            {archives.length === 0 ? 'Aucune archive disponible' : 'Aucun résultat pour cette recherche'}
+            {archives.length === 0 ? 'Aucune archive disponible' : 'Aucun résultat pour ces filtres'}
           </div>
         )}
 
         {filtered.map((a, i) => (
-          <div key={a.id} style={{
-            display: 'grid', gridTemplateColumns: '2fr 1fr 80px 80px 80px 80px 120px',
-            gap: '12px', padding: '14px 20px', alignItems: 'center',
-            background: i % 2 === 0 ? 'rgba(255,255,255,0.01)' : 'transparent',
-            borderBottom: '1px solid rgba(255,255,255,0.04)',
-            transition: 'background 0.15s',
-          }}
-          onMouseOver={e => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.04)'; }}
-          onMouseOut={e => { (e.currentTarget as HTMLElement).style.background = i % 2 === 0 ? 'rgba(255,255,255,0.01)' : 'transparent'; }}
+          <div
+            key={a.id}
+            style={{
+              display: 'grid', gridTemplateColumns: '2fr 1fr 80px 80px 80px 80px 120px',
+              gap: '12px', padding: '14px 20px', alignItems: 'center',
+              background: i % 2 === 0 ? 'rgba(255,255,255,0.01)' : 'transparent',
+              borderBottom: '1px solid rgba(255,255,255,0.04)',
+              transition: 'background 0.15s',
+            }}
+            onMouseOver={e => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.04)'; }}
+            onMouseOut={e => { (e.currentTarget as HTMLElement).style.background = i % 2 === 0 ? 'rgba(255,255,255,0.01)' : 'transparent'; }}
           >
             <div>
-              <div style={{ fontWeight: 600, color: 'var(--text-primary)', fontSize: '0.9rem' }}>{a.taskName ?? a.name ?? a.id}</div>
-              <div style={{ fontSize: '11px', color: 'var(--text-secondary)', fontFamily: 'var(--mono)', marginTop: '2px' }}>{a.skillName ?? a.id}</div>
+              <div style={{ fontWeight: 600, color: 'var(--text-primary)', fontSize: '0.9rem' }}>
+                {a.taskName ?? a.name ?? a.id}
+              </div>
+              <div style={{ fontSize: '11px', color: 'var(--text-secondary)', fontFamily: 'var(--mono)', marginTop: '2px' }}>
+                {a.skillName ?? a.id}
+              </div>
             </div>
             <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
-              {(() => { const d = new Date(a.startedAt ?? a.date ?? ''); return isNaN(d.getTime()) ? '—' : d.toLocaleString('fr-FR', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }); })()}
+              {(() => {
+                const d = new Date(a.startedAt ?? a.date ?? '');
+                return isNaN(d.getTime()) ? '—' : d.toLocaleString('fr-FR', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+              })()}
             </div>
-            <div style={{ fontSize: '12px', fontFamily: 'var(--mono)', color: 'var(--text-primary)' }}>{a.duration}s</div>
-            <div style={{ fontSize: '12px', fontFamily: 'var(--mono)', color: 'var(--text-primary)' }}>{((a.promptTokens ?? 0) + (a.completionTokens ?? a.tokens ?? 0)).toLocaleString()}</div>
-            <div style={{ fontSize: '12px', fontFamily: 'var(--mono)', color: '#10b981' }}>${typeof a.cost === 'number' ? a.cost.toFixed(4) : a.cost}</div>
+            <div style={{ fontSize: '12px', fontFamily: 'var(--mono)', color: 'var(--text-primary)' }}>
+              {a.duration}s
+            </div>
+            <div style={{ fontSize: '12px', fontFamily: 'var(--mono)', color: 'var(--text-primary)' }}>
+              {((a.promptTokens ?? 0) + (a.completionTokens ?? (a.tokens as number | undefined) ?? 0)).toLocaleString()}
+            </div>
+            <div style={{ fontSize: '12px', fontFamily: 'var(--mono)', color: '#10b981' }}>
+              ${typeof a.cost === 'number' ? a.cost.toFixed(4) : a.cost}
+            </div>
             <Tag label={modelShortName(a.llmModel ?? '')} color="#10b981" />
             <StatusBadge status={getStatus(a)} />
           </div>
