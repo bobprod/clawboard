@@ -377,8 +377,8 @@ export const SecurityModule = () => {
       apiFetch(`${BASE}/api/security/guardrails`).then(r => r.json()).catch(() => []),
       apiFetch(`${BASE}/api/security/events`).then(r => r.json()).catch(() => []),
     ]).then(([g, e]) => {
-      setGuardrails(g);
-      setEvents(e);
+      setGuardrails(Array.isArray(g) ? g : []);
+      setEvents(Array.isArray(e) ? e : []);
       setLoading(false);
     });
   }, []);

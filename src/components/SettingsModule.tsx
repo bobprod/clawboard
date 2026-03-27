@@ -3,7 +3,10 @@ import { useSearchParams } from 'react-router-dom';
 import {
   Settings, Server, Key, User, Bell, Shield, Save, Check,
   Loader2, Trash2, ExternalLink, RefreshCw,
-  Zap, AlertTriangle, Info, Wifi, WifiOff, CheckCircle,
+  Zap, AlertTriangle, Wifi, WifiOff, CheckCircle,
+  ToggleLeft, ToggleRight, Send, MessageSquare, Mail, Webhook,
+  Download, HardDrive, ChevronRight, X, CheckCircle2,
+  Puzzle, Radio, Wrench, BarChart2, Package,
 } from 'lucide-react';
 import { useApiKeys } from '../hooks/useApiKeys';
 import { apiFetch } from '../lib/apiFetch';
@@ -122,8 +125,9 @@ const PROVIDERS: Provider[] = [
   {
     id: 'nvidia', name: 'NVIDIA NIM', shortName: 'NVIDIA', category: 'Agrégateurs',
     color: '#76b900', logo: '⚙️',
+    keyPrefix: 'nvapi-',
     docsUrl: 'https://build.nvidia.com/settings/api-key',
-    models: ['llama-3.1-nemotron-70b', 'mixtral-8x22b', 'phi-3-medium'],
+    models: ['MiniMax M2.5 · GLM-5 · Kimi K2.5 · DeepSeek R1 · Qwen3 Coder · Llama 4 · +150 modèles'],
   },
   {
     id: 'together', name: 'Together AI', shortName: 'Together', category: 'Agrégateurs',
@@ -151,11 +155,13 @@ const CATEGORIES = ['International', 'Asie', 'Agrégateurs'];
 
 // ─── Settings sections ────────────────────────────────────────────────────────
 
-type Section = 'server' | 'apikeys' | 'security' | 'notifications' | 'profile';
+type Section = 'server' | 'apikeys' | 'ollama' | 'security' | 'notifications' | 'profile' | 'plugins';
 
 const NAV: { id: Section; label: string; icon: any; badge?: () => number }[] = [
   { id: 'server',        label: 'Serveur & Connexions', icon: Server },
   { id: 'apikeys',       label: 'Clés API & BYOK',      icon: Key },
+  { id: 'ollama',        label: 'LLMs Locaux',           icon: HardDrive },
+  { id: 'plugins',       label: 'Plugins',               icon: Puzzle },
   { id: 'security',      label: 'Règles de Sécurité',   icon: Shield },
   { id: 'notifications', label: 'Notifications',         icon: Bell },
   { id: 'profile',       label: 'Profil Utilisateur',    icon: User },
@@ -168,15 +174,18 @@ const KeyRow = ({
   value,
   onChange,
   onClear,
+  backendConfigured = false,
 }: {
   provider: Provider;
   value: string;
   onChange: (v: string) => void;
   onClear: () => void;
+  backendConfigured?: boolean;
 }) => {
   const [show, setShow] = useState(false);
   const [draft, setDraft] = useState(value);
-  const configured = value.trim().length > 0;
+  const hasLocal = value.trim().length > 0;
+  const configured = hasLocal || backendConfigured;
 
   useEffect(() => { setDraft(value); }, [value]);
 
@@ -248,7 +257,11 @@ const KeyRow = ({
           color: configured ? '#10b981' : 'var(--text-muted)',
           whiteSpace: 'nowrap',
         }}>
-          {configured ? <><CheckCircle size={11} /> Configuré</> : <>Non configuré</>}
+          {hasLocal
+            ? <><CheckCircle size={11} /> Configuré</>
+            : backendConfigured
+              ? <><CheckCircle size={11} /> Serveur</>
+              : <>Non configuré</>}
         </div>
 
         {/* Docs link */}
@@ -294,7 +307,7 @@ const KeyRow = ({
 // ─── Section: API Keys ────────────────────────────────────────────────────────
 
 const ApiKeysSection = () => {
-  const { keys, setKey, clearKey, syncToBackend, syncing, lastSync, syncError, configuredCount } = useApiKeys();
+  const { keys, setKey, clearKey, syncToBackend, syncing, lastSync, syncError, configuredCount, backendStatus } = useApiKeys();
   const [searchFilter, setSearchFilter] = useState('');
   const [activeCategory, setActiveCategory] = useState<string>('Tous');
 
@@ -357,6 +370,7 @@ const ApiKeysSection = () => {
           placeholder="Rechercher un provider…"
           value={searchFilter}
           onChange={e => setSearchFilter(e.target.value)}
+          autoComplete="off"
           style={{
             flex: 1, minWidth: 180, padding: '8px 12px',
             background: 'rgba(0,0,0,0.2)', border: '1px solid var(--border-subtle)',
@@ -397,6 +411,7 @@ const ApiKeysSection = () => {
                   value={keys[p.id] || ''}
                   onChange={v => setKey(p.id, v)}
                   onClear={() => clearKey(p.id)}
+                  backendConfigured={!!backendStatus[p.id]}
                 />
               ))}
             </div>
@@ -440,6 +455,327 @@ const ApiKeysSection = () => {
           {syncing ? <Loader2 size={15} style={{ animation: 'spin 1s linear infinite' }} /> : <RefreshCw size={15} />}
           Enregistrer &amp; Synchroniser
         </button>
+      </div>
+    </div>
+  );
+};
+
+// ─── Section: Ollama Local LLMs ──────────────────────────────────────────────
+
+const BASE_API = 'http://localhost:4000';
+
+const POPULAR_MODELS: { name: string; label: string; size: string; cat: string }[] = [
+  // Texte / Raisonnement
+  { name: 'qwen3.5:4b',         label: 'Qwen3.5 4B',        size: '3.4 GB', cat: '💬 Texte' },
+  { name: 'qwen3.5:9b',         label: 'Qwen3.5 9B',        size: '6.6 GB', cat: '💬 Texte' },
+  { name: 'llama3.2',           label: 'Llama 3.2',         size: '2 GB',   cat: '💬 Texte' },
+  { name: 'mistral',            label: 'Mistral 7B',        size: '4 GB',   cat: '💬 Texte' },
+  { name: 'phi4',               label: 'Phi-4',             size: '9 GB',   cat: '💬 Texte' },
+  { name: 'deepseek-r1',        label: 'DeepSeek R1',       size: '4 GB',   cat: '💬 Texte' },
+  // Vision / Image
+  { name: 'qwen3-vl:8b',        label: 'Qwen3-VL 8B',       size: '7 GB',   cat: '🖼️ Vision' },
+  { name: 'qwen3.5:latest',     label: 'Qwen3.5 Vision',    size: '6.6 GB', cat: '🖼️ Vision' },
+  { name: 'openbmb/minicpm-v4.5', label: 'MiniCPM-V 4.5',  size: '~6 GB',  cat: '🖼️ Vision' },
+  { name: 'granite3.2-vision',  label: 'Granite Vision 2B', size: '~2 GB',  cat: '🖼️ Vision' },
+  // Vidéo
+  { name: 'anas/video-llava',              label: 'Video-LLaVA',       size: '~7 GB', cat: '🎬 Vidéo' },
+  { name: 'ahmadwaqar/smolvlm2-500m-video', label: 'SmolVLM2 Video',   size: '~1 GB', cat: '🎬 Vidéo' },
+  { name: 'openbmb/minicpm-v2.6',          label: 'MiniCPM-V 2.6',    size: '~6 GB', cat: '🎬 Vidéo' },
+  // Audio / Speech
+  { name: 'dimavz/whisper-tiny',     label: 'Whisper Tiny',    size: '~150 MB', cat: '🎙️ Audio' },
+  { name: 'karanchopda333/whisper',  label: 'Whisper Full',    size: '~1.5 GB', cat: '🎙️ Audio' },
+  // Code
+  { name: 'qwen2.5-coder',      label: 'Qwen2.5 Coder',     size: '4 GB',   cat: '💻 Code' },
+  { name: 'deepseek-coder-v2',  label: 'DeepSeek Coder V2', size: '8 GB',   cat: '💻 Code' },
+];
+
+interface OllamaModel {
+  name: string;
+  size: number;
+  details?: { parameter_size?: string; quantization_level?: string };
+}
+
+interface PullProgress { status: string; completed?: number; total?: number; }
+
+const OllamaSection = () => {
+  const [status,      setStatus]      = useState<{ running: boolean; version?: string } | null>(null);
+  const [models,      setModels]      = useState<OllamaModel[]>([]);
+  const [loadingMdl,  setLoadingMdl]  = useState(false);
+  const [pullName,    setPullName]    = useState('');
+  const [pulling,     setPulling]     = useState(false);
+  const [pullProg,    setPullProg]    = useState<PullProgress | null>(null);
+  const [deleting,    setDeleting]    = useState<string | null>(null);
+  const [pullDone,    setPullDone]    = useState<string | null>(null);
+  const [starting,    setStarting]    = useState(false);
+
+  const startOllama = async () => {
+    setStarting(true);
+    try {
+      await apiFetch(`${BASE_API}/api/ollama/start`, { method: 'POST' });
+      await checkStatus();
+    } catch { /* ignore */ }
+    setStarting(false);
+  };
+
+  const checkStatus = async () => {
+    // Try via backend first
+    try {
+      const r = await apiFetch(`${BASE_API}/api/ollama/status`, { signal: AbortSignal.timeout(2500) });
+      const d = await r.json();
+      if (d.running !== undefined) {
+        setStatus(d);
+        if (d.running) loadModels();
+        return;
+      }
+    } catch { /* backend offline, try direct */ }
+    // Fallback: ping Ollama directly from browser
+    try {
+      const r = await fetch('http://localhost:11434/api/version', { signal: AbortSignal.timeout(2000) });
+      if (r.ok) {
+        const d = await r.json();
+        setStatus({ running: true, version: d.version });
+        loadModelsDirect();
+        return;
+      }
+    } catch { /* ignore */ }
+    setStatus({ running: false });
+  };
+
+  const loadModels = async () => {
+    setLoadingMdl(true);
+    try {
+      const r = await apiFetch(`${BASE_API}/api/ollama/models`, { signal: AbortSignal.timeout(3000) });
+      const d = await r.json();
+      setModels(Array.isArray(d) ? d : (d.models || []));
+    } catch { await loadModelsDirect(); }
+    finally { setLoadingMdl(false); }
+  };
+
+  const loadModelsDirect = async () => {
+    setLoadingMdl(true);
+    try {
+      const r = await fetch('http://localhost:11434/api/tags', { signal: AbortSignal.timeout(3000) });
+      const d = await r.json();
+      setModels(d.models || []);
+    } catch { setModels([]); }
+    finally { setLoadingMdl(false); }
+  };
+
+  useEffect(() => { checkStatus(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handlePull = async () => {
+    if (!pullName.trim()) return;
+    setPulling(true); setPullProg({ status: 'Démarrage…' }); setPullDone(null);
+    try {
+      const r = await apiFetch(`${BASE_API}/api/ollama/pull`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: pullName.trim() }),
+      });
+      const reader = r.body!.getReader();
+      const dec = new TextDecoder();
+      let buf = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const lines = buf.split('\n'); buf = lines.pop()!;
+        for (const line of lines) {
+          const m = line.match(/^data:\s*(.+)/);
+          if (!m) continue;
+          try {
+            const p: PullProgress = JSON.parse(m[1]);
+            if (p.status === 'done') { setPullDone(pullName.trim()); setPullProg(null); }
+            else setPullProg(p);
+          } catch (_) {}
+        }
+      }
+    } catch (e: unknown) {
+      setPullProg({ status: `Erreur: ${e instanceof Error ? e.message : String(e)}` });
+    }
+    setPulling(false);
+    loadModels();
+  };
+
+  const handleDelete = async (name: string) => {
+    if (!confirm(`Supprimer ${name} ?`)) return;
+    setDeleting(name);
+    try {
+      await apiFetch(`${BASE_API}/api/ollama/models/${encodeURIComponent(name)}`, { method: 'DELETE' });
+      setModels(m => m.filter(x => x.name !== name));
+    } catch { alert('Erreur lors de la suppression'); }
+    setDeleting(null);
+  };
+
+  const fmtSize = (bytes: number) => {
+    if (!bytes) return '?';
+    const gb = bytes / 1e9;
+    return gb >= 1 ? `${gb.toFixed(1)} GB` : `${(bytes / 1e6).toFixed(0)} MB`;
+  };
+
+  const pullPct = pullProg?.total ? Math.round((pullProg.completed ?? 0) / pullProg.total * 100) : null;
+
+  const cardStyle: React.CSSProperties = {
+    background: 'var(--bg-glass)', border: '1px solid var(--border-subtle)',
+    borderRadius: 10, padding: '12px 16px',
+    display: 'flex', alignItems: 'center', gap: 12,
+  };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+
+      {/* Status */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div style={{
+            width: 10, height: 10, borderRadius: '50%',
+            background: status === null ? '#94a3b8' : status.running ? '#10b981' : '#ef4444',
+            boxShadow: status?.running ? '0 0 8px #10b981' : 'none',
+          }} />
+          <span style={{ fontWeight: 700, fontSize: '0.95rem', color: 'var(--text-primary)' }}>
+            {status === null ? 'Vérification…' : status.running ? `Ollama actif${status.version ? ` v${status.version}` : ''}` : 'Ollama inactif'}
+          </span>
+        </div>
+        <button onClick={checkStatus} title="Rafraîchir" style={{
+          background: 'none', border: '1px solid var(--border-subtle)', borderRadius: 7,
+          padding: '5px 10px', cursor: 'pointer', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 5, fontSize: 12,
+        }}>
+          <RefreshCw size={12} /> Actualiser
+        </button>
+      </div>
+
+      {status && !status.running && (
+        <div style={{ background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: 8, padding: '12px 14px', fontSize: 13, color: '#fca5a5', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+          <span>Ollama n'est pas en cours d'exécution. Lance <code style={{ background: 'rgba(0,0,0,0.3)', padding: '1px 6px', borderRadius: 4 }}>ollama serve</code> dans ton terminal.</span>
+          <button onClick={startOllama} disabled={starting} style={{
+            flexShrink: 0, padding: '6px 14px', borderRadius: 7, border: 'none', cursor: starting ? 'not-allowed' : 'pointer',
+            background: starting ? 'rgba(16,185,129,0.3)' : 'rgba(16,185,129,0.15)',
+            color: '#10b981', fontWeight: 600, fontSize: 12, display: 'flex', alignItems: 'center', gap: 6,
+            opacity: starting ? 0.7 : 1,
+          }}>
+            {starting ? <><Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> Démarrage…</> : '▶ Démarrer Ollama'}
+          </button>
+        </div>
+      )}
+
+      {/* Modèles installés */}
+      {status?.running && (
+        <div>
+          <div style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 10, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <span><HardDrive size={11} style={{ marginRight: 5, verticalAlign: 'middle' }} />Modèles installés ({models.length})</span>
+            {loadingMdl && <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} />}
+          </div>
+          {models.length === 0 && !loadingMdl ? (
+            <div style={{ fontSize: 13, color: 'var(--text-muted)', padding: '10px 0' }}>Aucun modèle installé.</div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {models.map(m => (
+                <div key={m.name} style={cardStyle}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 600, fontSize: '0.875rem', color: 'var(--text-primary)', fontFamily: 'var(--mono)' }}>{m.name}</div>
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2, display: 'flex', gap: 10 }}>
+                      <span>{fmtSize(m.size)}</span>
+                      {m.details?.parameter_size && <span>{m.details.parameter_size}</span>}
+                      {m.details?.quantization_level && <span>{m.details.quantization_level}</span>}
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => handleDelete(m.name)}
+                    disabled={deleting === m.name}
+                    title="Supprimer"
+                    style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: 6, padding: '5px 8px', cursor: 'pointer', color: '#ef4444', display: 'flex', alignItems: 'center' }}
+                  >
+                    {deleting === m.name ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> : <Trash2 size={13} />}
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Pull */}
+      {status?.running && (
+        <div>
+          <div style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 10 }}>
+            <Download size={11} style={{ marginRight: 5, verticalAlign: 'middle' }} />Télécharger un modèle
+          </div>
+
+          {/* Raccourcis populaires groupés */}
+          {(() => {
+            const cats = [...new Set(POPULAR_MODELS.map(p => p.cat))];
+            return cats.map(cat => (
+              <div key={cat} style={{ marginBottom: 8 }}>
+                <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.4px', marginBottom: 5 }}>{cat}</div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
+                  {POPULAR_MODELS.filter(p => p.cat === cat).map(p => (
+                    <button key={p.name} onClick={() => setPullName(p.name)} title={`${p.name} — ${p.size}`}
+                      style={{
+                        padding: '4px 10px', borderRadius: 6, fontSize: 11, fontWeight: 600, cursor: 'pointer',
+                        background: pullName === p.name ? 'rgba(139,92,246,0.18)' : 'var(--bg-glass)',
+                        border: `1px solid ${pullName === p.name ? 'rgba(139,92,246,0.45)' : 'var(--border-subtle)'}`,
+                        color: pullName === p.name ? 'var(--brand-accent)' : 'var(--text-muted)',
+                        transition: 'all 0.15s',
+                      }}
+                    >
+                      {p.label} <span style={{ opacity: 0.55 }}>{p.size}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ));
+          })()}
+
+          {/* Input + bouton */}
+          <div style={{ display: 'flex', gap: 8 }}>
+            <input
+              value={pullName}
+              onChange={e => setPullName(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && !pulling && handlePull()}
+              placeholder="ex: llama3.2:latest"
+              style={{ flex: 1, padding: '9px 12px', borderRadius: 8, background: 'rgba(0,0,0,0.2)', border: '1px solid var(--border-subtle)', color: 'var(--text-primary)', fontSize: 13, outline: 'none', fontFamily: 'var(--mono)' }}
+            />
+            <button onClick={handlePull} disabled={pulling || !pullName.trim()}
+              style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '9px 16px', borderRadius: 8, background: 'var(--brand-primary)', border: 'none', color: '#fff', fontWeight: 700, fontSize: 13, cursor: pulling ? 'wait' : 'pointer', opacity: !pullName.trim() ? 0.5 : 1 }}
+            >
+              {pulling ? <Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} /> : <Download size={14} />}
+              Pull
+            </button>
+          </div>
+
+          {/* Progression */}
+          {pulling && pullProg && (
+            <div style={{ marginTop: 12, background: 'rgba(139,92,246,0.06)', border: '1px solid rgba(139,92,246,0.2)', borderRadius: 8, padding: '12px 14px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: 'var(--text-secondary)', marginBottom: 8 }}>
+                <span>{pullProg.status}</span>
+                {pullPct !== null && <span>{pullPct}%</span>}
+              </div>
+              {pullPct !== null && (
+                <div style={{ height: 6, background: 'rgba(255,255,255,0.08)', borderRadius: 3, overflow: 'hidden' }}>
+                  <div style={{ height: '100%', width: `${pullPct}%`, background: 'var(--brand-accent)', borderRadius: 3, transition: 'width 0.3s' }} />
+                </div>
+              )}
+              {pullProg.completed != null && pullProg.total != null && (
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>
+                  {fmtSize(pullProg.completed)} / {fmtSize(pullProg.total)}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Succès */}
+          {pullDone && !pulling && (
+            <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 8, color: '#10b981', fontSize: 13, fontWeight: 600 }}>
+              <CheckCircle2 size={15} /> {pullDone} installé avec succès !
+              <button onClick={() => setPullDone(null)} style={{ marginLeft: 'auto', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)' }}><X size={13} /></button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Modèles personnalisés hint */}
+      <div style={{ fontSize: 12, color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 6, paddingTop: 4, borderTop: '1px solid var(--border-subtle)' }}>
+        <ChevronRight size={12} />
+        Tous les modèles installés sont automatiquement disponibles dans le créateur de tâches sous <code style={{ background: 'rgba(0,0,0,0.2)', padding: '1px 5px', borderRadius: 3 }}>ollama/&lt;nom&gt;</code>
       </div>
     </div>
   );
@@ -675,22 +1011,486 @@ const ProfileSection = () => {
   );
 };
 
-// ─── Placeholder sections ─────────────────────────────────────────────────────
+// ─── Section: Security (guardrails) ──────────────────────────────────────────
 
-const PlaceholderSection = ({ title, desc }: { title: string; desc: string }) => (
-  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '60px 0', gap: 16, textAlign: 'center' }}>
-    <div style={{ width: 56, height: 56, borderRadius: '50%', background: 'rgba(139,92,246,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      <Info size={24} color="var(--brand-accent)" />
+interface Guardrail { id: number; name: string; description: string; enabled: boolean; category: string; }
+
+const SecuritySection = () => {
+  const [guardrails, setGuardrails] = useState<Guardrail[]>([]);
+  const [loading, setLoading]       = useState(true);
+  const [toggling, setToggling]     = useState<Set<number>>(new Set());
+
+  useEffect(() => {
+    apiFetch('http://localhost:4000/api/security/guardrails')
+      .then(r => r.json())
+      .then(data => { setGuardrails(Array.isArray(data) ? data : []); setLoading(false); })
+      .catch(() => {
+        // Mock fallback
+        setGuardrails([
+          { id: 1, name: 'Blocage injections SQL',       description: "Détecte et bloque les tentatives d'injection SQL dans les prompts.", enabled: true,  category: 'Inputs' },
+          { id: 2, name: 'Filtre prompt injection',      description: 'Empêche les instructions malveillantes cachées dans le contenu utilisateur.', enabled: true,  category: 'Inputs' },
+          { id: 3, name: 'Rate limiting par agent',      description: "Limite à 60 requêtes/min par agent. Protège contre les boucles infinies.", enabled: true,  category: 'Rate Limiting' },
+          { id: 4, name: 'Rate limiting global',         description: 'Plafond global de 500 req/min sur l\'ensemble du gateway.', enabled: false, category: 'Rate Limiting' },
+          { id: 5, name: 'Whitelist IP',                 description: "N'autorise que les IP définies dans ALLOWED_ORIGINS.", enabled: false, category: 'Réseau' },
+          { id: 6, name: 'Validation sorties PII',       description: 'Détecte les données personnelles (email, téléphone, IBAN) dans les réponses agents.', enabled: true,  category: 'Outputs' },
+          { id: 7, name: 'Blocage contenus nuisibles',   description: 'Refuse les tâches dont le prompt contient des demandes offensantes ou illégales.', enabled: true,  category: 'Inputs' },
+          { id: 8, name: 'Audit log complet',            description: 'Enregistre chaque appel API avec IP, agent, tokens et coût dans audit_logs.', enabled: true,  category: 'Audit' },
+        ]);
+        setLoading(false);
+      });
+  }, []);
+
+  const toggle = async (g: Guardrail) => {
+    setToggling(prev => new Set([...prev, g.id]));
+    try {
+      const res = await apiFetch('http://localhost:4000/api/security/guardrails', {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: g.id, enabled: !g.enabled }),
+      });
+      if (res.ok) {
+        const updated: Guardrail[] = await res.json();
+        setGuardrails(Array.isArray(updated) ? updated : guardrails.map(x => x.id === g.id ? { ...x, enabled: !x.enabled } : x));
+      } else throw new Error();
+    } catch {
+      setGuardrails(prev => prev.map(x => x.id === g.id ? { ...x, enabled: !x.enabled } : x));
+    } finally {
+      setToggling(prev => { const s = new Set(prev); s.delete(g.id); return s; });
+    }
+  };
+
+  const categories = [...new Set(guardrails.map(g => g.category))];
+  const enabledCount = guardrails.filter(g => g.enabled).length;
+
+  if (loading) return <div style={{ padding: '40px 0', textAlign: 'center', color: 'var(--text-muted)', display: 'flex', gap: 10, justifyContent: 'center', alignItems: 'center' }}><Loader2 size={18} style={{ animation: 'spin 1s linear infinite' }} /> Chargement…</div>;
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+
+      <div style={{ display: 'flex', gap: 10 }}>
+        <div style={{ padding: '8px 16px', borderRadius: 8, background: 'rgba(16,185,129,0.1)', border: '1px solid rgba(16,185,129,0.2)', color: '#10b981', fontSize: '0.82rem', fontWeight: 700 }}>
+          {enabledCount} actif{enabledCount > 1 ? 's' : ''}
+        </div>
+        <div style={{ padding: '8px 16px', borderRadius: 8, background: 'rgba(161,161,170,0.1)', border: '1px solid var(--border-subtle)', color: 'var(--text-muted)', fontSize: '0.82rem', fontWeight: 700 }}>
+          {guardrails.length - enabledCount} désactivé{guardrails.length - enabledCount > 1 ? 's' : ''}
+        </div>
+      </div>
+
+      {categories.map(cat => (
+        <div key={cat}>
+          <div style={{ fontSize: '0.75rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '1px', color: 'var(--text-muted)', marginBottom: 8 }}>{cat}</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {guardrails.filter(g => g.category === cat).map(g => (
+              <div key={g.id} style={{
+                display: 'flex', alignItems: 'center', gap: 14,
+                padding: '14px 18px', borderRadius: 12,
+                background: 'var(--bg-surface-elevated)', border: `1px solid ${g.enabled ? 'rgba(16,185,129,0.2)' : 'var(--border-subtle)'}`,
+                transition: 'border-color 0.2s',
+              }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 600, fontSize: '0.9rem', marginBottom: 2 }}>{g.name}</div>
+                  <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>{g.description}</div>
+                </div>
+                <button
+                  onClick={() => toggle(g)}
+                  disabled={toggling.has(g.id)}
+                  style={{ background: 'none', border: 'none', cursor: toggling.has(g.id) ? 'not-allowed' : 'pointer', padding: 0, opacity: toggling.has(g.id) ? 0.5 : 1, display: 'flex', alignItems: 'center' }}
+                  title={g.enabled ? 'Désactiver' : 'Activer'}
+                >
+                  {toggling.has(g.id)
+                    ? <Loader2 size={22} style={{ animation: 'spin 1s linear infinite', color: 'var(--text-muted)' }} />
+                    : g.enabled
+                      ? <ToggleRight size={28} color="#10b981" />
+                      : <ToggleLeft  size={28} color="var(--text-muted)" />
+                  }
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+      <style>{`@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
     </div>
-    <div>
-      <div style={{ fontWeight: 700, fontSize: '1rem', marginBottom: 6 }}>{title}</div>
-      <div style={{ color: 'var(--text-muted)', fontSize: '0.85rem', maxWidth: 340 }}>{desc}</div>
+  );
+};
+
+// ─── Section: Notifications ───────────────────────────────────────────────────
+
+interface NotifConfig {
+  telegram_token: string; telegram_chat_id: string;
+  discord_webhook: string;
+  email_smtp: string; email_from: string; email_to: string;
+  webhook_url: string;
+  notify_on_task_done: boolean; notify_on_task_failed: boolean; notify_on_approval: boolean;
+}
+
+const NOTIF_DEFAULTS: NotifConfig = {
+  telegram_token: '', telegram_chat_id: '',
+  discord_webhook: '',
+  email_smtp: '', email_from: '', email_to: '',
+  webhook_url: '',
+  notify_on_task_done: true, notify_on_task_failed: true, notify_on_approval: true,
+};
+
+const NotificationsSection = () => {
+  const [config,   setConfig]   = useState<NotifConfig>(NOTIF_DEFAULTS);
+  const [loading,  setLoading]  = useState(true);
+  const [saving,   setSaving]   = useState(false);
+  const [saved,    setSaved]    = useState(false);
+  const [testing,  setTesting]  = useState<string | null>(null);
+  const [testMsg,  setTestMsg]  = useState<{ ch: string; ok: boolean; msg: string } | null>(null);
+
+  useEffect(() => {
+    apiFetch('http://localhost:4000/api/settings/notifications')
+      .then(r => r.json())
+      .then(d => { setConfig({ ...NOTIF_DEFAULTS, ...d }); setLoading(false); })
+      .catch(() => { setLoading(false); });
+  }, []);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await apiFetch('http://localhost:4000/api/settings/notifications', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(config),
+      });
+      setSaved(true); setTimeout(() => setSaved(false), 2500);
+    } catch { /* ignore */ } finally { setSaving(false); }
+  };
+
+  const testChannel = async (ch: string) => {
+    setTesting(ch); setTestMsg(null);
+    try {
+      const res = await apiFetch('http://localhost:4000/api/settings/notifications/test', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ channel: ch }),
+      });
+      const d = await res.json();
+      setTestMsg({ ch, ok: res.ok, msg: d.message ?? (res.ok ? 'Envoyé !' : 'Erreur.') });
+    } catch {
+      setTestMsg({ ch, ok: false, msg: 'Serveur inaccessible.' });
+    } finally { setTesting(null); }
+  };
+
+  const inputStyle: React.CSSProperties = {
+    width: '100%', padding: '9px 12px', borderRadius: 8,
+    background: 'var(--bg-glass)', border: '1px solid var(--border-subtle)',
+    color: 'var(--text-primary)', fontSize: '0.88rem', outline: 'none', boxSizing: 'border-box',
+  };
+  const labelStyle: React.CSSProperties = {
+    display: 'block', fontSize: '0.75rem', fontWeight: 600,
+    color: 'var(--text-secondary)', marginBottom: 5, textTransform: 'uppercase', letterSpacing: '0.5px',
+  };
+  const fieldFocus = (e: React.FocusEvent<HTMLInputElement>) => e.target.style.borderColor = 'var(--brand-accent)';
+  const fieldBlur  = (e: React.FocusEvent<HTMLInputElement>) => e.target.style.borderColor = 'var(--border-subtle)';
+
+  const ChannelCard = ({ icon, title, ch, children }: { icon: React.ReactNode; title: string; ch: string; children: React.ReactNode }) => (
+    <div className="glass-panel p-5" style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontWeight: 700 }}>
+          <div style={{ color: 'var(--brand-accent)' }}>{icon}</div>
+          {title}
+        </div>
+        <button
+          onClick={() => testChannel(ch)}
+          disabled={testing === ch}
+          style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 14px', borderRadius: 8, border: 'none', background: 'rgba(139,92,246,0.1)', color: 'var(--brand-accent)', fontSize: '0.8rem', cursor: testing === ch ? 'not-allowed' : 'pointer', fontWeight: 600 }}
+        >
+          {testing === ch ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> : <Send size={13} />}
+          Tester
+        </button>
+      </div>
+      {children}
+      {testMsg?.ch === ch && (
+        <div style={{ fontSize: '0.78rem', display: 'flex', gap: 6, alignItems: 'center', color: testMsg.ok ? '#10b981' : '#ef4444' }}>
+          {testMsg.ok ? <CheckCircle size={13} /> : <AlertTriangle size={13} />} {testMsg.msg}
+        </div>
+      )}
     </div>
-    <div style={{ padding: '6px 16px', borderRadius: 20, background: 'rgba(139,92,246,0.1)', border: '1px solid rgba(139,92,246,0.2)', color: 'var(--brand-accent)', fontSize: '0.78rem', fontWeight: 600 }}>
-      Bientôt disponible
+  );
+
+  if (loading) return <div style={{ padding: '40px 0', textAlign: 'center', color: 'var(--text-muted)', display: 'flex', gap: 10, justifyContent: 'center', alignItems: 'center' }}><Loader2 size={18} style={{ animation: 'spin 1s linear infinite' }} /> Chargement…</div>;
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+      {/* Événements déclencheurs */}
+      <div className="glass-panel p-5">
+        <div style={{ fontWeight: 700, marginBottom: 14 }}>Déclencher les alertes sur</div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {([
+            ['notify_on_task_done',   'Tâche terminée avec succès'],
+            ['notify_on_task_failed', 'Tâche en échec'],
+            ['notify_on_approval',    "Demande d'approbation reçue"],
+          ] as [keyof NotifConfig, string][]).map(([key, label]) => (
+            <label key={key} style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', fontSize: '0.9rem' }}>
+              <button
+                onClick={() => setConfig(c => ({ ...c, [key]: !c[key] }))}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, display: 'flex' }}
+              >
+                {config[key]
+                  ? <ToggleRight size={26} color="#10b981" />
+                  : <ToggleLeft  size={26} color="var(--text-muted)" />
+                }
+              </button>
+              {label}
+            </label>
+          ))}
+        </div>
+      </div>
+
+      {/* Telegram */}
+      <ChannelCard icon={<MessageSquare size={18} />} title="Telegram" ch="telegram">
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          <div>
+            <label style={labelStyle}>Bot Token</label>
+            <input style={inputStyle} value={config.telegram_token} placeholder="1234567890:AAF..."
+              onChange={e => setConfig(c => ({ ...c, telegram_token: e.target.value }))}
+              onFocus={fieldFocus} onBlur={fieldBlur} />
+          </div>
+          <div>
+            <label style={labelStyle}>Chat ID</label>
+            <input style={inputStyle} value={config.telegram_chat_id} placeholder="-100123456789"
+              onChange={e => setConfig(c => ({ ...c, telegram_chat_id: e.target.value }))}
+              onFocus={fieldFocus} onBlur={fieldBlur} />
+          </div>
+        </div>
+      </ChannelCard>
+
+      {/* Discord */}
+      <ChannelCard icon={<MessageSquare size={18} />} title="Discord" ch="discord">
+        <div>
+          <label style={labelStyle}>Webhook URL</label>
+          <input style={inputStyle} value={config.discord_webhook} placeholder="https://discord.com/api/webhooks/..."
+            onChange={e => setConfig(c => ({ ...c, discord_webhook: e.target.value }))}
+            onFocus={fieldFocus} onBlur={fieldBlur} />
+        </div>
+      </ChannelCard>
+
+      {/* Email */}
+      <ChannelCard icon={<Mail size={18} />} title="Email (SMTP)" ch="email">
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          <div>
+            <label style={labelStyle}>Serveur SMTP</label>
+            <input style={inputStyle} value={config.email_smtp} placeholder="smtp.gmail.com:587"
+              onChange={e => setConfig(c => ({ ...c, email_smtp: e.target.value }))}
+              onFocus={fieldFocus} onBlur={fieldBlur} />
+          </div>
+          <div>
+            <label style={labelStyle}>Expéditeur</label>
+            <input style={inputStyle} value={config.email_from} placeholder="noreply@mondomaine.com"
+              onChange={e => setConfig(c => ({ ...c, email_from: e.target.value }))}
+              onFocus={fieldFocus} onBlur={fieldBlur} />
+          </div>
+          <div style={{ gridColumn: '1/-1' }}>
+            <label style={labelStyle}>Destinataire(s)</label>
+            <input style={inputStyle} value={config.email_to} placeholder="admin@mondomaine.com"
+              onChange={e => setConfig(c => ({ ...c, email_to: e.target.value }))}
+              onFocus={fieldFocus} onBlur={fieldBlur} />
+          </div>
+        </div>
+      </ChannelCard>
+
+      {/* Generic webhook */}
+      <ChannelCard icon={<Webhook size={18} />} title="Webhook générique" ch="webhook">
+        <div>
+          <label style={labelStyle}>URL</label>
+          <input style={inputStyle} value={config.webhook_url} placeholder="https://hooks.slack.com/..."
+            onChange={e => setConfig(c => ({ ...c, webhook_url: e.target.value }))}
+            onFocus={fieldFocus} onBlur={fieldBlur} />
+        </div>
+      </ChannelCard>
+
+      {/* Save */}
+      <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+        <button onClick={save} disabled={saving} style={{
+          display: 'flex', alignItems: 'center', gap: 8, padding: '10px 24px', borderRadius: 8, border: 'none',
+          background: saved ? 'var(--status-success)' : 'var(--brand-primary)', color: '#fff',
+          fontWeight: 700, cursor: saving ? 'not-allowed' : 'pointer', transition: 'background 0.3s',
+        }}>
+          {saving ? <Loader2 size={16} style={{ animation: 'spin 1s linear infinite' }} /> : saved ? <Check size={16} /> : <Save size={16} />}
+          {saving ? 'Enregistrement…' : saved ? 'Sauvegardé !' : 'Enregistrer'}
+        </button>
+      </div>
+
+      <style>{`@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
     </div>
-  </div>
-);
+  );
+};
+
+// ─── Section: Plugins ────────────────────────────────────────────────────────
+
+type PluginType = 'channel' | 'tool' | 'diagnostics' | 'other';
+
+interface PluginDef {
+  id: string;
+  name: string;
+  pkg: string;
+  description: string;
+  type: PluginType;
+  author: string;
+  official: boolean;
+  version?: string;
+  docsUrl?: string;
+}
+
+const PLUGIN_CATALOGUE: PluginDef[] = [
+  { id: 'twitch',      name: 'Twitch',           pkg: '@openclaw/plugin-twitch',      description: 'Canal Twitch — réponses live chat',                         type: 'channel',     author: 'openclaw', official: true,  version: '2026.3.22' },
+  { id: 'matrix',      name: 'Matrix',           pkg: '@openclaw/plugin-matrix',      description: 'Canal Matrix — DMs et salons chiffrés',                     type: 'channel',     author: 'openclaw', official: true,  version: '2026.3.22' },
+  { id: 'msteams',     name: 'Microsoft Teams',  pkg: '@openclaw/plugin-msteams',     description: 'Canal Teams — bot intégré Microsoft 365',                   type: 'channel',     author: 'openclaw', official: true,  version: '2026.3.22' },
+  { id: 'nostr',       name: 'Nostr',            pkg: '@openclaw/plugin-nostr',       description: 'Canal Nostr — DMs NIP-04 chiffrés',                         type: 'channel',     author: 'openclaw', official: true,  version: '2026.3.22' },
+  { id: 'zalouser',    name: 'Zalo',             pkg: '@openclaw/plugin-zalouser',    description: 'Canal Zalo — compte personnel via zca-js',                  type: 'channel',     author: 'openclaw', official: true,  version: '2026.3.22' },
+  { id: 'otel',        name: 'Diagnostics OTel', pkg: '@openclaw/plugin-otel',        description: 'Export traces OpenTelemetry — Grafana, Jaeger, Datadog',    type: 'diagnostics', author: 'openclaw', official: true,  version: '2026.3.22', docsUrl: 'https://opentelemetry.io' },
+  { id: 'opik',        name: 'Opik',             pkg: '@opik/opik-openclaw',          description: 'Monitoring agents — traces, coûts, comportements',          type: 'diagnostics', author: 'opik',     official: false, version: '1.x', docsUrl: 'https://opik.ai' },
+  { id: 'lossless',    name: 'Lossless Claw',    pkg: '@martian-engineering/lossless-claw', description: 'Résumé DAG des conversations avec fidélité du contexte', type: 'tool',       author: 'martian-engineering', official: false, version: '1.x' },
+  { id: 'linkmind',    name: 'LinkMind Context', pkg: 'linkmind-openclaw',            description: 'Moteur de contexte enrichi pour agents',                    type: 'tool',        author: 'zhujunxian3', official: false, version: '1.0.0' },
+  { id: 'kpainter',    name: 'KPainter',         pkg: 'kpainter-openclaw',            description: 'APIs création, catalogue et status KPainter',               type: 'tool',        author: 'bbgasj',   official: false, version: '0.1.0' },
+];
+
+const TYPE_LABELS: Record<PluginType, { label: string; color: string; icon: React.FC<{ size?: number }> }> = {
+  channel:     { label: 'Canal',        color: '#3b82f6', icon: Radio },
+  tool:        { label: 'Outil',         color: '#10b981', icon: Wrench },
+  diagnostics: { label: 'Diagnostics',  color: '#f59e0b', icon: BarChart2 },
+  other:       { label: 'Autre',         color: '#94a3b8', icon: Package },
+};
+
+const PLUGINS_KEY = 'clawboard-plugins-enabled';
+
+const PluginsSection = () => {
+  const [enabled, setEnabled] = useState<Record<string, boolean>>(() => {
+    try { return JSON.parse(localStorage.getItem(PLUGINS_KEY) ?? '{}'); } catch { return {}; }
+  });
+  const [installing, setInstalling] = useState<string | null>(null);
+  const [filter, setFilter] = useState<PluginType | 'all'>('all');
+
+  const toggle = (id: string) => {
+    setEnabled(prev => {
+      const next = { ...prev, [id]: !prev[id] };
+      localStorage.setItem(PLUGINS_KEY, JSON.stringify(next));
+      return next;
+    });
+  };
+
+  const install = async (plugin: PluginDef) => {
+    setInstalling(plugin.id);
+    try {
+      await apiFetch('http://localhost:4000/api/plugins/install', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pkg: plugin.pkg }),
+      });
+      toggle(plugin.id);
+    } catch {
+      // graceful — marque quand même comme activé localement
+      setEnabled(prev => {
+        const next = { ...prev, [plugin.id]: true };
+        localStorage.setItem(PLUGINS_KEY, JSON.stringify(next));
+        return next;
+      });
+    } finally {
+      setInstalling(null);
+    }
+  };
+
+  const filtered = filter === 'all' ? PLUGIN_CATALOGUE : PLUGIN_CATALOGUE.filter(p => p.type === filter);
+  const enabledCount = Object.values(enabled).filter(Boolean).length;
+
+  const card: React.CSSProperties = {
+    background: 'var(--bg-glass)', border: '1px solid var(--border-subtle)',
+    borderRadius: 12, padding: '16px 18px',
+    display: 'flex', alignItems: 'flex-start', gap: 14,
+  };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+
+      {/* Header stats */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+        <div style={{ background: 'var(--bg-glass)', border: '1px solid var(--border-subtle)', borderRadius: 10, padding: '8px 16px', fontSize: 13, color: 'var(--text-secondary)' }}>
+          <span style={{ fontWeight: 700, color: 'var(--brand-accent)', marginRight: 6 }}>{enabledCount}</span>plugin{enabledCount !== 1 ? 's' : ''} actif{enabledCount !== 1 ? 's' : ''}
+        </div>
+        <div style={{ background: 'var(--bg-glass)', border: '1px solid var(--border-subtle)', borderRadius: 10, padding: '8px 16px', fontSize: 13, color: 'var(--text-secondary)' }}>
+          <span style={{ fontWeight: 700, color: 'var(--text-primary)', marginRight: 6 }}>{PLUGIN_CATALOGUE.length}</span>disponibles
+        </div>
+      </div>
+
+      {/* Filtres */}
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        {(['all', 'channel', 'tool', 'diagnostics'] as const).map(f => {
+          const active = filter === f;
+          const cfg = f !== 'all' ? TYPE_LABELS[f] : null;
+          return (
+            <button key={f} onClick={() => setFilter(f)}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 6,
+                padding: '6px 14px', borderRadius: 8, cursor: 'pointer', fontSize: 12, fontWeight: 600,
+                background: active ? (cfg ? `${cfg.color}22` : 'rgba(139,92,246,0.15)') : 'var(--bg-glass)',
+                border: `1px solid ${active ? (cfg?.color ?? 'var(--brand-primary)') + '66' : 'var(--border-subtle)'}`,
+                color: active ? (cfg?.color ?? 'var(--brand-accent)') : 'var(--text-muted)',
+              }}>
+              {f === 'all' ? 'Tous' : cfg!.label}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Liste */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {filtered.map(plugin => {
+          const isOn   = !!enabled[plugin.id];
+          const busy   = installing === plugin.id;
+          const cfg    = TYPE_LABELS[plugin.type];
+          const Icon   = cfg.icon;
+
+          return (
+            <div key={plugin.id} style={{ ...card, opacity: busy ? 0.7 : 1, transition: 'opacity 0.2s' }}>
+              {/* Icône type */}
+              <div style={{ width: 38, height: 38, borderRadius: 10, background: `${cfg.color}20`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, marginTop: 2, color: cfg.color }}>
+                <Icon size={18} />
+              </div>
+
+              {/* Info */}
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  <span style={{ fontWeight: 700, fontSize: 14, color: 'var(--text-primary)' }}>{plugin.name}</span>
+                  <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 6, background: `${cfg.color}20`, color: cfg.color }}>{cfg.label}</span>
+                  {plugin.official && <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 6, background: 'rgba(139,92,246,0.15)', color: 'var(--brand-accent)' }}>Official</span>}
+                  {plugin.version && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>v{plugin.version}</span>}
+                </div>
+                <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 3 }}>{plugin.description}</div>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4, fontFamily: 'var(--mono)' }}>{plugin.pkg}</div>
+              </div>
+
+              {/* Actions */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+                {plugin.docsUrl && (
+                  <a href={plugin.docsUrl} target="_blank" rel="noreferrer"
+                    style={{ color: 'var(--text-muted)', display: 'flex', alignItems: 'center' }}>
+                    <ExternalLink size={14} />
+                  </a>
+                )}
+                {isOn ? (
+                  <button onClick={() => toggle(plugin.id)}
+                    style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 14px', borderRadius: 8, background: 'rgba(16,185,129,0.12)', border: '1px solid rgba(16,185,129,0.3)', color: '#10b981', cursor: 'pointer', fontSize: 12, fontWeight: 700 }}>
+                    <ToggleRight size={15} /> Activé
+                  </button>
+                ) : (
+                  <button onClick={() => install(plugin)} disabled={busy}
+                    style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 14px', borderRadius: 8, background: 'var(--brand-primary)', border: 'none', color: '#fff', cursor: busy ? 'not-allowed' : 'pointer', fontSize: 12, fontWeight: 700 }}>
+                    {busy ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> : <Download size={13} />}
+                    {busy ? 'Install…' : 'Installer'}
+                  </button>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+        Les plugins sont gérés via <code style={{ background: 'var(--bg-glass)', padding: '1px 6px', borderRadius: 4 }}>openclaw plugins install</code>. L'état activé/désactivé est sauvegardé localement.
+      </div>
+    </div>
+  );
+};
 
 // ─── SettingsModule ───────────────────────────────────────────────────────────
 
@@ -723,8 +1523,10 @@ export const SettingsModule = () => {
     switch (section) {
       case 'server':        return <ServerSection />;
       case 'apikeys':       return <ApiKeysSection />;
-      case 'security':      return <PlaceholderSection title="Règles de Sécurité" desc="Gérez les listes blanches d'IP, les permissions par agent, et les politiques de rate-limiting." />;
-      case 'notifications': return <PlaceholderSection title="Notifications" desc="Configurez les alertes Telegram, Discord, e-mail et webhooks pour les événements système." />;
+      case 'ollama':        return <OllamaSection />;
+      case 'plugins':       return <PluginsSection />;
+      case 'security':      return <SecuritySection />;
+      case 'notifications': return <NotificationsSection />;
       case 'profile':       return <ProfileSection />;
     }
   };

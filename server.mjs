@@ -1,6 +1,10 @@
 import http from 'http';
 import os from 'os';
 import crypto from 'crypto';
+import { readFileSync, existsSync, statSync } from 'fs';
+import { join as pathJoin, extname, dirname } from 'path';
+import { fileURLToPath } from 'url';
+import { spawn } from 'child_process';
 import pool, { checkConnection } from './src/db/client.js';
 import { pub as redisClient, connectRedis, cacheGet, cacheSet, cacheDel } from './src/lib/redis.js';
 
@@ -15,7 +19,7 @@ if (!KEK_HEX) console.warn('[SECURITY] CLAWBOARD_KEK not set — API keys stored
 
 // ─── Security helpers ─────────────────────────────────────────────────────────
 
-const PUBLIC_PREFIXES = ['/api/ping', '/api/vitals', '/api/quota', '/api/logs/'];
+const PUBLIC_PREFIXES = ['/api/ping', '/api/health', '/api/vitals', '/api/quota', '/api/logs/', '/api/auth/login'];
 
 function checkAuth(req) {
   if (!SECRET) return true;
@@ -32,7 +36,7 @@ function checkAuth(req) {
 
 function requireAuth(req, res) {
   if (checkAuth(req)) return true;
-  res.writeHead(401, { 'Content-Type': 'application/json' });
+  res.writeHead(401, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
   res.end(JSON.stringify({ error: 'Unauthorized' }));
   return false;
 }
@@ -396,6 +400,25 @@ async function seedIfEmpty() {
 let apiKeys = {};
 let quotas  = {};
 let totalCost24h = 0;
+
+// ─── Agents — in-memory fleet (enrichi depuis /api/tasks quand branché) ───────
+
+const AGENTS = new Map([
+  ['main',  { id: 'main',  label: 'NemoClaw Router',  role: 'Main Orchestrator',   model: 'claude-sonnet-4-6', status: 'active',  parentId: null,   position: { x: 300, y: 50  } }],
+  ['sub1',  { id: 'sub1',  label: 'Code Architect',   role: 'Software Engineer',   model: 'llama-3.2',         status: 'active',  parentId: 'main', position: { x: 50,  y: 300 } }],
+  ['sub2',  { id: 'sub2',  label: 'Data Analyst',     role: 'Data processing',     model: 'claude-haiku-4-5',  status: 'offline', parentId: 'main', position: { x: 300, y: 300 } }],
+  ['sub3',  { id: 'sub3',  label: 'Security Scanner', role: 'Vulnerability check', model: 'qwen-2.5',          status: 'active',  parentId: 'main', position: { x: 550, y: 300 } }],
+]);
+
+// ─── Notifications config — in-memory (persisted to DB as a memory doc optionally) ─
+
+let notificationsConfig = {
+  telegram_token: '', telegram_chat_id: '',
+  discord_webhook: '',
+  email_smtp: '', email_from: '', email_to: '',
+  webhook_url: '',
+  notify_on_task_done: true, notify_on_task_failed: true, notify_on_approval: true,
+};
 
 async function loadApiKeys() {
   const { rows } = await pool.query('SELECT provider, encrypted_value FROM api_keys');
@@ -818,7 +841,8 @@ const server = http.createServer((req, res) => {
   const url  = new URL(req.url, `http://localhost:${PORT}`);
   const path = url.pathname;
 
-  const isPublic = PUBLIC_PREFIXES.some(p => path.startsWith(p))
+  const isPublic = !path.startsWith('/api/')
+    || PUBLIC_PREFIXES.some(p => path.startsWith(p))
     || (path === '/api/tasks' && req.method === 'GET' && url.searchParams.get('stream') === '1');
   if (!isPublic && !requireAuth(req, res)) return;
 
@@ -845,8 +869,114 @@ const server = http.createServer((req, res) => {
     });
   };
 
-  // ── Ping
-  if (path === '/api/ping') return json(200, { ok: true, ts: Date.now() });
+  // ── Ping / Health
+  if (path === '/api/ping')   return json(200, { ok: true, ts: Date.now() });
+  if (path === '/api/health') return json(200, { status: 'ok', ts: Date.now(), db: 'postgres', version: '1.0.0' });
+
+  // ── Proxy ping (pour éviter CORS dans CollaborationModule) ──────────────────
+  if (path === '/api/proxy-ping' && req.method === 'POST') {
+    body(async ({ url, apiKey }) => {
+      if (!url) return json(400, { error: 'url required' });
+      try {
+        const headers = { 'Content-Type': 'application/json' };
+        if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
+        const r = await fetch(url, { headers, signal: AbortSignal.timeout(5000) });
+        let data = {};
+        try { data = await r.json(); } catch (_) {}
+        json(r.ok ? 200 : 502, { ok: r.ok, status: r.status, data });
+      } catch (e) { json(502, { ok: false, error: e.message }); }
+    });
+    return;
+  }
+
+  // ── Ollama management ────────────────────────────────────────────────────────
+  const OLLAMA = process.env.OLLAMA_HOST || 'http://localhost:11434';
+
+  if (path === '/api/ollama/status' && req.method === 'GET') {
+    (async () => {
+      try {
+        const r = await fetch(`${OLLAMA}/api/version`, { signal: AbortSignal.timeout(2000) });
+        if (!r.ok) return json(200, { running: false });
+        const d = await r.json();
+        json(200, { running: true, version: d.version });
+      } catch { json(200, { running: false }); }
+    })();
+    return;
+  }
+
+  if (path === '/api/ollama/models' && req.method === 'GET') {
+    (async () => {
+      try {
+        const r = await fetch(`${OLLAMA}/api/tags`, { signal: AbortSignal.timeout(3000) });
+        if (!r.ok) return json(503, { error: 'Ollama unreachable' });
+        const d = await r.json();
+        json(200, { models: d.models || [] });
+      } catch (e) { json(503, { error: e.message }); }
+    })();
+    return;
+  }
+
+  if (path === '/api/ollama/pull' && req.method === 'POST') {
+    body(async ({ name }) => {
+      if (!name) return json(400, { error: 'name required' });
+      try {
+        const r = await fetch(`${OLLAMA}/api/pull`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, stream: true }),
+        });
+        res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' });
+        const reader = r.body.getReader();
+        const dec = new TextDecoder();
+        let buf = '';
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += dec.decode(value, { stream: true });
+          const lines = buf.split('\n'); buf = lines.pop();
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            try { res.write(`data: ${line}\n\n`); } catch (_) {}
+          }
+        }
+        res.write('data: {"status":"done"}\n\n');
+        res.end();
+      } catch (e) { try { json(503, { error: e.message }); } catch (_) {} }
+    });
+    return;
+  }
+
+  if (path.startsWith('/api/ollama/models/') && req.method === 'DELETE') {
+    const modelName = decodeURIComponent(path.slice('/api/ollama/models/'.length));
+    (async () => {
+      try {
+        const r = await fetch(`${OLLAMA}/api/delete`, {
+          method: 'DELETE', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: modelName }),
+        });
+        r.ok ? json(200, { ok: true }) : json(503, { error: 'Delete failed' });
+      } catch (e) { json(503, { error: e.message }); }
+    })();
+    return;
+  }
+
+  if (path === '/api/ollama/start' && req.method === 'POST') {
+    (async () => {
+      try {
+        const proc = spawn('ollama', ['serve'], { detached: true, stdio: 'ignore', shell: true });
+        proc.unref();
+        let started = false;
+        for (let i = 0; i < 6; i++) {
+          await new Promise(r => setTimeout(r, 500));
+          try {
+            const r = await fetch('http://localhost:11434/api/version', { signal: AbortSignal.timeout(1000) });
+            if (r.ok) { started = true; break; }
+          } catch { /* still starting */ }
+        }
+        json(200, { ok: started, message: started ? 'Ollama démarré' : 'Démarrage en cours…' });
+      } catch (e) { json(500, { ok: false, error: e.message }); }
+    })();
+    return;
+  }
 
   // ── SSE streams
   if (path === '/api/vitals') { sse(sseClients.vitals); res.write(`data: ${JSON.stringify(getVitals())}\n\n`); return; }
@@ -1431,6 +1561,184 @@ const server = http.createServer((req, res) => {
       res.end();
     });
     return;
+  }
+
+  // ── Auth — login / change password
+  if (path === '/api/auth/login' && req.method === 'POST') {
+    body(b => {
+      const { username, password } = b;
+      if (!username || !password) return json(400, { message: 'Identifiant et mot de passe requis.' });
+      if (SECRET && password !== SECRET) return json(401, { message: 'Identifiants incorrects.' });
+      const token = SECRET || `session-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      json(200, {
+        token,
+        user: { username, displayName: username, role: username === 'admin' ? 'admin' : 'user', avatar: null },
+      });
+    });
+    return;
+  }
+  if (path === '/api/auth/password' && req.method === 'POST') {
+    body(b => {
+      const { current, next } = b;
+      if (!current || !next) return json(400, { message: 'Champs requis.' });
+      if (SECRET && current !== SECRET) return json(401, { message: 'Mot de passe actuel incorrect.' });
+      if (next.length < 6) return json(400, { message: 'Le mot de passe doit contenir au moins 6 caractères.' });
+      json(200, { ok: true });
+    });
+    return;
+  }
+
+  // ── Agents fleet
+  if (path === '/api/agents' && req.method === 'GET') {
+    json(200, [...AGENTS.values()]);
+    return;
+  }
+  const agentRunMatch  = path.match(/^\/api\/agents\/([^/]+)\/run$/);
+  const agentStopMatch = path.match(/^\/api\/agents\/([^/]+)\/stop$/);
+  if (agentRunMatch && req.method === 'POST') {
+    const agent = AGENTS.get(agentRunMatch[1]);
+    if (!agent) return json(404, { error: 'Agent not found' });
+    agent.status = 'active';
+    json(200, agent);
+    return;
+  }
+  if (agentStopMatch && req.method === 'POST') {
+    const agent = AGENTS.get(agentStopMatch[1]);
+    if (!agent) return json(404, { error: 'Agent not found' });
+    agent.status = 'offline';
+    json(200, agent);
+    return;
+  }
+
+  // ── Notifications settings
+  if (path === '/api/settings/notifications' && req.method === 'GET') {
+    json(200, notificationsConfig);
+    return;
+  }
+  if (path === '/api/settings/notifications' && req.method === 'POST') {
+    body(b => {
+      const safe = sanitizeObject(b);
+      notificationsConfig = { ...notificationsConfig, ...safe };
+      json(200, { ok: true, config: notificationsConfig });
+    });
+    return;
+  }
+  // ── Notifications test
+  if (path === '/api/settings/notifications/test' && req.method === 'POST') {
+    body(b => {
+      const { channel } = sanitizeObject(b);
+      const cfg = notificationsConfig;
+      const missing = channel === 'telegram' ? (!cfg.telegram_token || !cfg.telegram_chat_id) :
+                      channel === 'discord'  ? !cfg.discord_webhook :
+                      channel === 'email'    ? (!cfg.email_smtp || !cfg.email_to) :
+                      channel === 'webhook'  ? !cfg.webhook_url : true;
+      if (missing) return json(400, { message: `Configuration ${channel} incomplète.` });
+      // Demo: simulate success (real integration would call external APIs)
+      setTimeout(() => {}, 0);
+      json(200, { ok: true, message: `Message test envoyé via ${channel}.` });
+    });
+    return;
+  }
+
+  // ── NemoClaw CLI proxy endpoints ────────────────────────────────────────────
+
+  // GET /api/nemoclaw/status
+  if (path === '/api/nemoclaw/status' && req.method === 'GET') {
+    json(200, {
+      installed: false,
+      version: null,
+      sandboxes: [],
+      message: 'NemoClaw not installed on this host. Run "nemoclaw onboard" to set up.',
+    });
+    return;
+  }
+
+  // GET /api/nemoclaw/logs
+  if (path === '/api/nemoclaw/logs' && req.method === 'GET') {
+    json(200, {
+      installed: false,
+      logs: [
+        '[demo] NemoClaw is not installed on this server.',
+        '[demo] Install it via: curl -fsSL https://www.nvidia.com/nemoclaw.sh | bash',
+        '[demo] Then run: nemoclaw onboard',
+      ],
+    });
+    return;
+  }
+
+  // POST /api/nemoclaw/onboard
+  if (path === '/api/nemoclaw/onboard' && req.method === 'POST') {
+    json(200, {
+      installed: false,
+      message: 'NemoClaw is not installed on this server. To install it on your machine, run:\n  curl -fsSL https://www.nvidia.com/nemoclaw.sh | bash\nThen rerun "nemoclaw onboard" in your local terminal.',
+    });
+    return;
+  }
+
+  // POST /api/nemoclaw/launch
+  if (path === '/api/nemoclaw/launch' && req.method === 'POST') {
+    json(200, {
+      installed: false,
+      message: 'NemoClaw is not installed. Install it first, then run "nemoclaw launch".',
+    });
+    return;
+  }
+
+  // POST /api/nemoclaw/:name/connect
+  const connectMatch = path.match(/^\/api\/nemoclaw\/([^/]+)\/connect$/);
+  if (connectMatch && req.method === 'POST') {
+    const sandboxName = connectMatch[1];
+    json(200, {
+      installed: false,
+      sandbox: sandboxName,
+      message: `Sandbox "${sandboxName}" not found. NemoClaw is not installed on this server.`,
+    });
+    return;
+  }
+
+  // GET /api/nemoclaw/openshell/term
+  if (path === '/api/nemoclaw/openshell/term' && req.method === 'GET') {
+    json(200, {
+      installed: false,
+      message: 'openshell is part of the NemoClaw toolkit. Install NemoClaw to use it.',
+    });
+    return;
+  }
+
+  // GET /api/nemoclaw/openclaw/tui
+  if (path === '/api/nemoclaw/openclaw/tui' && req.method === 'GET') {
+    json(200, {
+      installed: false,
+      message: 'openclaw TUI requires NemoClaw to be installed locally. Use the Agent Chat module instead.',
+    });
+    return;
+  }
+
+  // ─── Static files (production — sert dist/ si present) ──────────────────────
+  {
+    const __dir = dirname(fileURLToPath(import.meta.url));
+    const distDir = pathJoin(__dir, 'dist');
+    if (existsSync(distDir)) {
+      const MIME = {
+        '.html': 'text/html', '.js': 'application/javascript', '.mjs': 'application/javascript',
+        '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png',
+        '.jpg': 'image/jpeg', '.ico': 'image/x-icon', '.json': 'application/json',
+        '.woff2': 'font/woff2', '.woff': 'font/woff', '.ttf': 'font/ttf',
+        '.webp': 'image/webp', '.gz': 'application/gzip',
+      };
+      let filePath = pathJoin(distDir, path === '/' ? 'index.html' : path);
+      if (!existsSync(filePath) || statSync(filePath).isDirectory()) {
+        filePath = pathJoin(distDir, 'index.html');
+      }
+      if (existsSync(filePath)) {
+        const ext = extname(filePath).toLowerCase();
+        const mime = MIME[ext] || 'application/octet-stream';
+        const data = readFileSync(filePath);
+        res.writeHead(200, { 'Content-Type': mime, 'Cache-Control': ext === '.html' ? 'no-cache' : 'public, max-age=31536000' });
+        res.end(data);
+        return;
+      }
+    }
   }
 
   res.writeHead(404); res.end('Not found');

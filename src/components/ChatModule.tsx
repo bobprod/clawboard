@@ -3,6 +3,7 @@ import {
   Send, Bot, User, Settings2, Trash2, ChevronDown, ChevronRight,
   Zap, Plus, Play, Trash, List, FileText, Clock, RefreshCw, X, Check,
   AlertTriangle, Cpu, Copy, Download, History, PlusCircle,
+  Eye, ShieldCheck, Archive, LayoutTemplate, Repeat2,
 } from 'lucide-react';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
@@ -39,31 +40,60 @@ interface PermissionConfig {
   default: boolean;
 }
 
+type ExecutionMode = 'plan' | 'auto' | 'confirm';
+
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const MODELS = [
   // ── Anthropic ──────────────────────────────────────────────────────────────
-  { id: 'claude-sonnet-4-6',                                label: 'Claude Sonnet 4.6',        provider: 'Anthropic',    color: '#8b5cf6' },
-  { id: 'openrouter/anthropic/claude-sonnet-4.6',            label: 'Claude via OpenRouter',    provider: 'OpenRouter',   color: '#6366f1' },
+  { id: 'claude-sonnet-4-6',                                label: 'Claude Sonnet 4.6',            provider: 'Anthropic',    color: '#8b5cf6' },
+  { id: 'openrouter/anthropic/claude-sonnet-4.6',            label: 'Claude via OpenRouter',        provider: 'OpenRouter',   color: '#6366f1' },
   // ── NVIDIA NIM — Nemotron ───────────────────────────────────────────────────
-  { id: 'nvidia/llama-3.1-nemotron-ultra-253b-v1',           label: '⚡ Nemotron Ultra 253B',   provider: 'NVIDIA NIM',   color: '#76b900' },
-  { id: 'nvidia/llama-3.3-nemotron-super-49b-v1',            label: 'Nemotron Super 49B',       provider: 'NVIDIA NIM',   color: '#76b900' },
-  { id: 'mistralai/mistral-nemotron',                        label: 'Mistral Nemotron',         provider: 'NVIDIA NIM',   color: '#ff7000' },
-  // ── NVIDIA NIM — Llama ─────────────────────────────────────────────────────
-  { id: 'meta/llama-3.1-405b-instruct',                     label: '⚡ Llama 3.1 405B',        provider: 'NVIDIA NIM',   color: '#0064c8' },
-  { id: 'meta/llama-4-maverick-17b-128e-instruct',           label: 'Llama 4 Maverick (128E)',  provider: 'NVIDIA NIM',   color: '#0064c8' },
-  { id: 'meta/llama-3.3-70b-instruct',                      label: 'Llama 3.3 70B',            provider: 'NVIDIA NIM',   color: '#0064c8' },
-  { id: 'meta/llama-3.1-8b-instruct',                       label: 'Llama 3.1 8B',             provider: 'NVIDIA NIM',   color: '#0064c8' },
-  // ── NVIDIA NIM — DeepSeek & Qwen ───────────────────────────────────────────
-  { id: 'deepseek-ai/deepseek-v3.2',                        label: '⚡ DeepSeek V3.2',         provider: 'NVIDIA NIM',   color: '#1a73e8' },
-  { id: 'qwen/qwq-32b',                                     label: 'QwQ 32B (Raisonnement)',   provider: 'NVIDIA NIM',   color: '#9333ea' },
-  { id: 'qwen/qwen3.5-397b-a17b',                           label: '⚡ Qwen 3.5 397B',         provider: 'NVIDIA NIM',   color: '#9333ea' },
-  // ── NVIDIA NIM — Kimi ──────────────────────────────────────────────────────
-  { id: 'moonshotai/kimi-k2.5',                             label: 'Kimi K2.5',                provider: 'NVIDIA NIM',   color: '#3b82f6' },
+  { id: 'nvidia/llama-3.1-nemotron-ultra-253b-v1',           label: '⚡ Nemotron Ultra 253B',       provider: 'NVIDIA NIM',   color: '#76b900' },
+  { id: 'nvidia/llama-3.3-nemotron-super-49b-v1',            label: 'Nemotron Super 49B',           provider: 'NVIDIA NIM',   color: '#76b900' },
+  { id: 'mistralai/mistral-nemotron',                        label: 'Mistral Nemotron',             provider: 'NVIDIA NIM',   color: '#ff7000' },
+  // ── NVIDIA NIM — Llama (Meta) ──────────────────────────────────────────────
+  { id: 'meta/llama-3.1-405b-instruct',                     label: '⚡ Llama 3.1 405B',            provider: 'NVIDIA NIM',   color: '#0064c8' },
+  { id: 'meta/llama-4-maverick-17b-128e-instruct',           label: 'Llama 4 Maverick (128E)',      provider: 'NVIDIA NIM',   color: '#0064c8' },
+  { id: 'meta/llama-4-scout-17b-16e-instruct',               label: 'Llama 4 Scout (16E)',          provider: 'NVIDIA NIM',   color: '#0064c8' },
+  { id: 'meta/llama-3.3-70b-instruct',                      label: 'Llama 3.3 70B',                provider: 'NVIDIA NIM',   color: '#0064c8' },
+  { id: 'meta/llama-3.2-90b-vision-instruct',               label: 'Llama 3.2 90B Vision',         provider: 'NVIDIA NIM',   color: '#0064c8' },
+  { id: 'meta/llama-3.1-8b-instruct',                       label: 'Llama 3.1 8B',                 provider: 'NVIDIA NIM',   color: '#0064c8' },
+  // ── NVIDIA NIM — MiniMax ───────────────────────────────────────────────────
+  { id: 'minimaxai/minimax-m2.5',                           label: '⚡ MiniMax M2.5',               provider: 'NVIDIA NIM',   color: '#7c3aed' },
+  { id: 'minimaxai/minimax-m2.1',                           label: 'MiniMax M2.1',                  provider: 'NVIDIA NIM',   color: '#7c3aed' },
+  { id: 'minimaxai/minimax-m2',                             label: 'MiniMax M2',                    provider: 'NVIDIA NIM',   color: '#7c3aed' },
+  // ── NVIDIA NIM — GLM (Z-AI / Zhipu) ───────────────────────────────────────
+  { id: 'z-ai/glm5',                                        label: '⚡ GLM-5 (744B MoE)',           provider: 'NVIDIA NIM',   color: '#0066ff' },
+  { id: 'z-ai/glm4.7',                                      label: 'GLM-4.7 (358B)',                provider: 'NVIDIA NIM',   color: '#0066ff' },
+  // ── NVIDIA NIM — Kimi (Moonshot) ──────────────────────────────────────────
+  { id: 'moonshotai/kimi-k2.5',                             label: '⚡ Kimi K2.5 (Vision)',         provider: 'NVIDIA NIM',   color: '#3b82f6' },
+  { id: 'moonshotai/kimi-k2-instruct',                      label: 'Kimi K2',                       provider: 'NVIDIA NIM',   color: '#3b82f6' },
+  { id: 'moonshotai/kimi-k2-thinking',                      label: 'Kimi K2 Thinking',              provider: 'NVIDIA NIM',   color: '#3b82f6' },
+  // ── NVIDIA NIM — DeepSeek ─────────────────────────────────────────────────
+  { id: 'deepseek-ai/deepseek-v3.2',                        label: '⚡ DeepSeek V3.2',             provider: 'NVIDIA NIM',   color: '#1a73e8' },
+  { id: 'deepseek-ai/deepseek-v3.1',                        label: 'DeepSeek V3.1',                provider: 'NVIDIA NIM',   color: '#1a73e8' },
+  { id: 'deepseek-ai/deepseek-r1',                          label: '⚡ DeepSeek R1 (Raisonnement)', provider: 'NVIDIA NIM',   color: '#1a73e8' },
+  { id: 'deepseek-ai/deepseek-r1-distill-qwen-32b',         label: 'DeepSeek R1 Distill 32B',      provider: 'NVIDIA NIM',   color: '#1a73e8' },
+  // ── NVIDIA NIM — Qwen (Alibaba) ───────────────────────────────────────────
+  { id: 'qwen/qwq-32b',                                     label: 'QwQ 32B (Raisonnement)',        provider: 'NVIDIA NIM',   color: '#ff6a00' },
+  { id: 'qwen/qwen3-coder-480b-a35b-instruct',              label: '⚡ Qwen3 Coder 480B',           provider: 'NVIDIA NIM',   color: '#ff6a00' },
+  { id: 'qwen/qwen3-5-122b-a10b',                           label: 'Qwen3.5 122B MoE',             provider: 'NVIDIA NIM',   color: '#ff6a00' },
+  { id: 'qwen/qwen2.5-coder-32b-instruct',                  label: 'Qwen 2.5 Coder 32B',           provider: 'NVIDIA NIM',   color: '#ff6a00' },
+  // ── NVIDIA NIM — Mistral ──────────────────────────────────────────────────
+  { id: 'mistralai/mistral-large-2-instruct',               label: 'Mistral Large 2',              provider: 'NVIDIA NIM',   color: '#ff7000' },
+  { id: 'mistralai/mixtral-8x22b-instruct',                 label: 'Mixtral 8x22B',                provider: 'NVIDIA NIM',   color: '#ff7000' },
+  { id: 'mistralai/codestral-22b-instruct-v0.1',            label: 'Codestral 22B',                provider: 'NVIDIA NIM',   color: '#ff7000' },
+  // ── NVIDIA NIM — Microsoft Phi ────────────────────────────────────────────
+  { id: 'microsoft/phi-4-mini-instruct',                    label: 'Phi-4 Mini',                   provider: 'NVIDIA NIM',   color: '#00a4ef' },
+  { id: 'microsoft/phi-4-mini-flash-reasoning',             label: 'Phi-4 Mini Flash Reasoning',   provider: 'NVIDIA NIM',   color: '#00a4ef' },
+  // ── NVIDIA NIM — OpenAI OSS ───────────────────────────────────────────────
+  { id: 'openai/gpt-oss-120b',                              label: 'GPT OSS 120B',                 provider: 'NVIDIA NIM',   color: '#10a37f' },
+  { id: 'openai/gpt-oss-20b',                               label: 'GPT OSS 20B',                  provider: 'NVIDIA NIM',   color: '#10a37f' },
   // ── Google Gemini ──────────────────────────────────────────────────────────
-  { id: 'gemini/gemini-2.5-flash',                          label: 'Gemini 2.5 Flash',         provider: 'Google',       color: '#4285f4' },
+  { id: 'gemini/gemini-2.5-flash',                          label: 'Gemini 2.5 Flash',             provider: 'Google',       color: '#4285f4' },
   // ── Local ──────────────────────────────────────────────────────────────────
-  { id: 'ollama/qwen2.5',                                   label: 'Qwen 2.5 (local)',         provider: 'Ollama',       color: '#10b981' },
+  { id: 'ollama/qwen2.5',                                   label: 'Qwen 2.5 (local)',             provider: 'Ollama',       color: '#10b981' },
 ];
 
 const PERMISSION_CONFIGS: PermissionConfig[] = [
@@ -75,6 +105,9 @@ const PERMISSION_CONFIGS: PermissionConfig[] = [
   { key: 'list_modeles',    label: 'Voir les modèles',      desc: 'Consulter les templates',           icon: Cpu,      default: true },
   { key: 'list_recurrences',label: 'Voir les récurrences',  desc: 'Consulter les CRONs',               icon: Clock,    default: true },
   { key: 'delete_task',     label: 'Supprimer des tâches',  desc: 'Action irréversible !',             icon: Trash,    danger: true, default: false },
+  { key: 'list_archives',   label: 'Voir les archives',     desc: 'Consulter les exécutions passées',  icon: Archive,  default: true },
+  { key: 'patch_modele',    label: 'Modifier des modèles',  desc: 'Éditer les templates de tâches',    icon: LayoutTemplate, default: false },
+  { key: 'run_recurrence',  label: 'Déclencher récurrences',desc: 'Lancer un CRON manuellement',       icon: Repeat2,  default: false },
 ];
 
 const TOOL_META: Record<string, { label: string; icon: React.ComponentType<{ size?: number }>; color: string }> = {
@@ -453,6 +486,40 @@ const ModelSelector = ({ model, onChange }: { model: string; onChange: (m: strin
   );
 };
 
+// ─── ExecutionModeSelector ────────────────────────────────────────────────────
+
+const EXEC_MODES: { id: ExecutionMode; label: string; icon: React.ReactNode; color: string; desc: string }[] = [
+  { id: 'plan',    label: 'Plan',      icon: <Eye size={13} />,          color: '#3b82f6', desc: 'Planifie et attend votre validation' },
+  { id: 'auto',    label: 'Auto',      icon: <Zap size={13} />,          color: '#10b981', desc: 'Exécute tout automatiquement' },
+  { id: 'confirm', label: 'Confirmer', icon: <ShieldCheck size={13} />,  color: '#f59e0b', desc: 'Demande avant chaque action critique' },
+];
+
+const ExecutionModeSelector = ({ mode, onChange }: { mode: ExecutionMode; onChange: (m: ExecutionMode) => void }) => {
+  const active = EXEC_MODES.find(m => m.id === mode)!;
+  return (
+    <div title={active.desc} style={{ display: 'flex', alignItems: 'center', background: 'rgba(255,255,255,0.04)', border: '1px solid var(--border-subtle)', borderRadius: 20, padding: '3px', gap: 2 }}>
+      {EXEC_MODES.map(m => (
+        <button
+          key={m.id}
+          onClick={() => onChange(m.id)}
+          title={m.desc}
+          style={{
+            display: 'flex', alignItems: 'center', gap: 5,
+            padding: '4px 10px', borderRadius: 16, border: 'none', cursor: 'pointer',
+            fontSize: '0.78rem', fontWeight: 600, transition: 'all 0.2s',
+            background: mode === m.id ? `${m.color}22` : 'transparent',
+            color: mode === m.id ? m.color : 'var(--text-muted)',
+            boxShadow: mode === m.id ? `0 0 0 1px ${m.color}55` : 'none',
+          }}
+        >
+          {m.icon}
+          <span>{m.label}</span>
+        </button>
+      ))}
+    </div>
+  );
+};
+
 // ─── ChatModule ───────────────────────────────────────────────────────────────
 
 const DEFAULT_PERMISSIONS = Object.fromEntries(
@@ -470,6 +537,12 @@ Je peux gérer votre système directement depuis ce chat :
 • ➕ *"Crée une tâche nommée Mon Audit"* — créer une tâche
 • 🗑️ *"Supprime tsk_005"* — supprimer (si autorisé)
 • 📊 *"Montre-moi les modèles"* — voir les templates
+• 📂 *"Montre mes archives"* — historique des exécutions
+
+**Modes d'exécution** (sélecteur en haut) :
+• 🗺️ **Plan** — je planifie, vous validez avant chaque action
+• ⚡ **Auto** — j'exécute tout automatiquement
+• ✋ **Confirmer** — je demande confirmation avant chaque action critique
 
 Sélectionnez votre modèle IA et configurez les permissions avec ⚙️`,
   toolCalls: [],
@@ -487,6 +560,8 @@ interface Conversation {
 }
 
 const STORAGE_KEY = 'clawboard-chat-history';
+const ACTIVE_CONV_KEY = 'clawboard-chat-active';
+const EXEC_MODE_KEY = 'clawboard-exec-mode';
 const MAX_CONVS = 30;
 
 function loadConversations(): Conversation[] {
@@ -574,9 +649,23 @@ const ConversationHistory = ({
 // ─── ChatModule ───────────────────────────────────────────────────────────────
 
 export const ChatModule = () => {
-  const [convId, setConvId]           = useState(() => uid());
   const [conversations, setConvs]     = useState<Conversation[]>(loadConversations);
-  const [messages, setMessages]       = useState<ChatMessage[]>([WELCOME]);
+  const [convId, setConvId]           = useState<string>(() => {
+    const savedId = localStorage.getItem(ACTIVE_CONV_KEY);
+    if (savedId) return savedId;
+    return uid();
+  });
+  const [messages, setMessages]       = useState<ChatMessage[]>(() => {
+    const savedId = localStorage.getItem(ACTIVE_CONV_KEY);
+    if (savedId) {
+      try {
+        const convs = loadConversations();
+        const active = convs.find(c => c.id === savedId);
+        if (active) return active.messages;
+      } catch { /* fall through */ }
+    }
+    return [WELCOME];
+  });
   const [input, setInput]             = useState('');
   const [isLoading, setIsLoading]     = useState(false);
   const [isThinking, setIsThinking]   = useState(false);
@@ -585,6 +674,9 @@ export const ChatModule = () => {
     try { return JSON.parse(localStorage.getItem('lia-permissions') || '{}'); }
     catch { return {}; }
   });
+  const [executionMode, setExecutionMode] = useState<ExecutionMode>(() =>
+    (localStorage.getItem(EXEC_MODE_KEY) as ExecutionMode) || 'confirm'
+  );
   const [showPerms, setShowPerms]     = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [keySynced, setKeySynced]     = useState(false);
@@ -632,7 +724,9 @@ export const ChatModule = () => {
 
   // ── Start a new conversation ────────────────────────────────────────────────
   const newChat = useCallback(() => {
-    setConvId(uid());
+    const newId = uid();
+    setConvId(newId);
+    localStorage.setItem(ACTIVE_CONV_KEY, newId);
     setMessages([WELCOME]);
     setInput('');
     setShowHistory(false);
@@ -691,6 +785,12 @@ export const ChatModule = () => {
   // Persist permissions
   useEffect(() => { localStorage.setItem('lia-permissions', JSON.stringify(permissions)); }, [permissions]);
 
+  // Persist active conversation ID
+  useEffect(() => { localStorage.setItem(ACTIVE_CONV_KEY, convId); }, [convId]);
+
+  // Persist execution mode
+  useEffect(() => { localStorage.setItem(EXEC_MODE_KEY, executionMode); }, [executionMode]);
+
   // Auto-scroll
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
 
@@ -726,7 +826,7 @@ export const ChatModule = () => {
       const res = await apiFetch(`${BASE}/api/chat/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: history, model, permissions: effectivePerms }),
+        body: JSON.stringify({ messages: history, model, permissions: effectivePerms, executionMode }),
       });
 
       if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
@@ -836,6 +936,8 @@ export const ChatModule = () => {
           </div>
 
           <ModelSelector model={model} onChange={setModel} />
+
+          <ExecutionModeSelector mode={executionMode} onChange={setExecutionMode} />
 
           {/* API key status badge */}
           {configuredCount > 0 && (
@@ -1048,6 +1150,10 @@ export const ChatModule = () => {
             Modèle : <strong style={{ color: activeModel.color }}>{activeModel.label}</strong>
             {' · '}
             {enabledCount} permission{enabledCount > 1 ? 's' : ''} active{enabledCount > 1 ? 's' : ''}
+            {' · '}
+            Mode : <strong style={{ color: EXEC_MODES.find(m => m.id === executionMode)!.color }}>
+              {EXEC_MODES.find(m => m.id === executionMode)!.label}
+            </strong>
           </div>
         </div>
       </div>

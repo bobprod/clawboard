@@ -18,12 +18,19 @@ interface MemDoc {
   updatedAt: string;
 }
 
-// ─── Quick-access system files (Nemoclaw-specific) ────────────────────────────
+// ─── Quick-access system files (Nemoclaw/OpenClaw workspace) ──────────────────
 const SYSTEM_FILES = [
-  { label: 'MEMORY.md',     icon: '🧠', hint: 'Mémoire persistante de l\'agent' },
-  { label: 'HEARTBEAT.md',  icon: '💓', hint: 'Fichier de santé et statut live' },
-  { label: 'CLAUDE.md',     icon: '⚡', hint: 'Instructions système principales' },
-  { label: 'NOTES.md',      icon: '📝', hint: 'Notes de travail de l\'agent' },
+  // Workspace OpenClaw fondamentaux
+  { label: 'AGENTS.md',    icon: '🤖', hint: 'Instructions et règles de comportement agent',   group: 'workspace' },
+  { label: 'SOUL.md',      icon: '✨', hint: 'Persona, ton et limites de l\'agent',              group: 'workspace' },
+  { label: 'IDENTITY.md',  icon: '🪪', hint: 'Nom, emoji et marqueurs d\'identité',             group: 'workspace' },
+  { label: 'USER.md',      icon: '👤', hint: 'Profil utilisateur et préférences',               group: 'workspace' },
+  { label: 'TOOLS.md',     icon: '🔧', hint: 'Documentation des outils locaux',                 group: 'workspace' },
+  // Nemoclaw-specific
+  { label: 'MEMORY.md',    icon: '🧠', hint: 'Mémoire persistante de l\'agent',                 group: 'memory' },
+  { label: 'HEARTBEAT.md', icon: '💓', hint: 'Fichier de santé et statut live',                 group: 'memory' },
+  { label: 'CLAUDE.md',    icon: '⚡', hint: 'Instructions système principales',                group: 'memory' },
+  { label: 'NOTES.md',     icon: '📝', hint: 'Notes de travail de l\'agent',                    group: 'memory' },
 ];
 
 const DOC_TYPES = ['Tous', 'Document', 'System Concept', 'User Data', 'Project Knowledge', 'Secrets (Encrypted)', 'Agent Rules'];
@@ -74,7 +81,7 @@ export const MemoryModule = () => {
     setSyncing(true);
     try {
       const data = await apiFetch(`${BASE}/api/memory`).then(r => r.json());
-      setDocs(data);
+      setDocs(Array.isArray(data) ? data : (data.docs ?? data.data ?? []));
       setLastSync(new Date());
     } catch {}
     setSyncing(false);
@@ -194,28 +201,42 @@ export const MemoryModule = () => {
         </div>
       </div>
 
-      {/* ── Quick-access Nemoclaw system files ──────────────────────────── */}
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-        {SYSTEM_FILES.map(f => (
-          <button
-            key={f.label}
-            onClick={() => handleQuickFile(f.label)}
-            title={f.hint}
-            style={{
-              display: 'flex', alignItems: 'center', gap: 6,
-              padding: '6px 14px', borderRadius: 20, cursor: 'pointer',
-              background: selected?.title === f.label ? 'rgba(236,72,153,0.1)' : 'var(--bg-glass)',
-              border: `1px solid ${selected?.title === f.label ? 'rgba(236,72,153,0.35)' : 'var(--border-subtle)'}`,
-              color: selected?.title === f.label ? 'var(--brand-secondary)' : 'var(--text-secondary)',
-              fontSize: '12px', fontWeight: 600, transition: 'all 0.15s',
-            }}
-          >
-            <span>{f.icon}</span> {f.label}
-          </button>
-        ))}
-        <span style={{ fontSize: '11px', color: 'var(--text-muted)', alignSelf: 'center', marginLeft: 4, fontStyle: 'italic' }}>
-          Fichiers système Nemoclaw
-        </span>
+      {/* ── Quick-access system files ────────────────────────────────────── */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {/* Workspace OpenClaw */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: '10px', fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px', whiteSpace: 'nowrap' }}>Workspace</span>
+          {SYSTEM_FILES.filter(f => f.group === 'workspace').map(f => (
+            <button key={f.label} onClick={() => handleQuickFile(f.label)} title={f.hint}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 6,
+                padding: '5px 12px', borderRadius: 20, cursor: 'pointer',
+                background: selected?.title === f.label ? 'rgba(139,92,246,0.15)' : 'var(--bg-glass)',
+                border: `1px solid ${selected?.title === f.label ? 'rgba(139,92,246,0.4)' : 'var(--border-subtle)'}`,
+                color: selected?.title === f.label ? 'var(--brand-accent)' : 'var(--text-secondary)',
+                fontSize: '12px', fontWeight: 600, transition: 'all 0.15s',
+              }}>
+              <span>{f.icon}</span> {f.label}
+            </button>
+          ))}
+        </div>
+        {/* Mémoire Nemoclaw */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: '10px', fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px', whiteSpace: 'nowrap' }}>Mémoire</span>
+          {SYSTEM_FILES.filter(f => f.group === 'memory').map(f => (
+            <button key={f.label} onClick={() => handleQuickFile(f.label)} title={f.hint}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 6,
+                padding: '5px 12px', borderRadius: 20, cursor: 'pointer',
+                background: selected?.title === f.label ? 'rgba(236,72,153,0.1)' : 'var(--bg-glass)',
+                border: `1px solid ${selected?.title === f.label ? 'rgba(236,72,153,0.35)' : 'var(--border-subtle)'}`,
+                color: selected?.title === f.label ? 'var(--brand-secondary)' : 'var(--text-secondary)',
+                fontSize: '12px', fontWeight: 600, transition: 'all 0.15s',
+              }}>
+              <span>{f.icon}</span> {f.label}
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* ── Type filter tabs ────────────────────────────────────────────── */}

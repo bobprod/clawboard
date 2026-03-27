@@ -1,19 +1,19 @@
 /**
  * useApiKeys — BYOK (Bring Your Own Key) management hook.
  *
- * Keys are stored in sessionStorage (cleared on tab/browser close) under
+ * Keys are stored in localStorage (persist across sessions) under
  * 'clawboard-api-keys' and synced to the backend (POST /api/settings/keys)
  * so the Node server can use them when calling LLM APIs on behalf of the user.
  *
  * ⚠️  Keys never leave the user's machine to any third party.
  *     They are sent only to localhost:4000 (the ClawBoard backend).
  *
- * Security: sessionStorage is used instead of localStorage so keys are NOT
- * persisted across browser sessions. The backend stores them encrypted
- * (AES-256-GCM) in memory when CLAWBOARD_KEK is set.
+ * On mount, the hook fetches backend status (GET /api/settings/keys) so that
+ * keys persisted in Postgres but absent from localStorage still show as
+ * configured (e.g. after clearing browser data or on a new device).
  */
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { apiFetch } from '../lib/apiFetch';
 
 const BASE = 'http://localhost:4000';
@@ -22,19 +22,32 @@ const STORAGE_KEY = 'clawboard-api-keys';
 export type ApiKeyStore = Record<string, string>;
 
 const load = (): ApiKeyStore => {
-  try { return JSON.parse(sessionStorage.getItem(STORAGE_KEY) || '{}'); }
+  try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}'); }
   catch { return {}; }
 };
 
 const save = (keys: ApiKeyStore) => {
-  sessionStorage.setItem(STORAGE_KEY, JSON.stringify(keys));
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(keys));
 };
 
 export const useApiKeys = () => {
   const [keys, setKeysState] = useState<ApiKeyStore>(load);
+  const [backendStatus, setBackendStatus] = useState<Record<string, boolean>>({});
   const [syncing, setSyncing] = useState(false);
   const [lastSync, setLastSync] = useState<Date | null>(null);
   const [syncError, setSyncError] = useState<string | null>(null);
+
+  // On mount: fetch which keys the backend already has in DB.
+  // Merges with localStorage so the UI reflects reality even if localStorage
+  // was cleared (new browser, private mode, etc.).
+  useEffect(() => {
+    apiFetch(`${BASE}/api/settings/keys`)
+      .then(r => r.json())
+      .then((data: { configured?: Record<string, boolean> }) => {
+        setBackendStatus(data.configured || {});
+      })
+      .catch(() => {});
+  }, []);
 
   /** Update a single key in state + localStorage (not yet synced to backend). */
   const setKey = useCallback((provider: string, value: string) => {
@@ -47,7 +60,7 @@ export const useApiKeys = () => {
     });
   }, []);
 
-  /** Remove a key. */
+  /** Remove a key locally and from backend. */
   const clearKey = useCallback((provider: string) => {
     setKeysState(prev => {
       const next = { ...prev };
@@ -55,6 +68,8 @@ export const useApiKeys = () => {
       save(next);
       return next;
     });
+    // Also remove from backend status so UI updates immediately
+    setBackendStatus(prev => { const n = { ...prev }; delete n[provider]; return n; });
   }, []);
 
   /** Push all current keys to the backend so Lia can use them. */
@@ -68,6 +83,11 @@ export const useApiKeys = () => {
         body: JSON.stringify(keys),
       });
       if (!res.ok) throw new Error(`Backend error ${res.status}`);
+      // Refresh backend status after sync
+      const data = await res.json();
+      if (data.configured) {
+        setBackendStatus(Object.fromEntries((data.configured as string[]).map((k: string) => [k, true])));
+      }
       setLastSync(new Date());
       return true;
     } catch (e: any) {
@@ -83,14 +103,28 @@ export const useApiKeys = () => {
     try {
       const res = await apiFetch(`${BASE}/api/settings/keys`);
       const data = await res.json();
-      return data.configured || {};
+      const status = data.configured || {};
+      setBackendStatus(status);
+      return status;
     } catch {
       return {};
     }
   }, []);
 
-  const isConfigured = (provider: string) => Boolean(keys[provider]?.trim());
-  const configuredCount = Object.values(keys).filter(v => v?.trim()).length;
+  // A provider is configured if it has a local value OR the backend has it in DB
+  const isConfigured = (provider: string) =>
+    Boolean(keys[provider]?.trim()) || Boolean(backendStatus[provider]);
 
-  return { keys, setKey, clearKey, syncToBackend, fetchBackendStatus, syncing, lastSync, syncError, isConfigured, configuredCount };
+  // Count unique configured providers across both sources
+  const allConfigured = new Set([
+    ...Object.keys(keys).filter(p => keys[p]?.trim()),
+    ...Object.keys(backendStatus).filter(p => backendStatus[p]),
+  ]);
+  const configuredCount = allConfigured.size;
+
+  return {
+    keys, setKey, clearKey, syncToBackend, fetchBackendStatus,
+    syncing, lastSync, syncError, isConfigured, configuredCount,
+    backendStatus,
+  };
 };

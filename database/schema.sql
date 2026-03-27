@@ -7,6 +7,57 @@
 -- Extension pgvector (embeddings pour memory_docs)
 -- TODO: CREATE EXTENSION IF NOT EXISTS vector;  (pgvector non installé — à activer plus tard)
 
+-- ─── Évolution de schéma : colonnes manquantes sur tables existantes ──────────
+-- Ces instructions ADD COLUMN IF NOT EXISTS sont idempotentes.
+-- Elles ajoutent les colonnes English sur les tables qui ont des noms French.
+
+-- tasks
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS name        TEXT        NOT NULL DEFAULT '';
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS status      TEXT        NOT NULL DEFAULT 'planned';
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS agent       TEXT        NOT NULL DEFAULT 'main';
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS skill_name  TEXT;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS scheduled_at TIMESTAMPTZ;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS recurrence_human TEXT;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS tokens_prompt    INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS tokens_completion INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS cost        NUMERIC(10,4) NOT NULL DEFAULT 0;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS modele_id   TEXT;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS instructions TEXT;
+
+-- guardrails
+-- Supprime NOT NULL sur les vieilles colonnes French pour que les INSERT English ne bloquent pas
+ALTER TABLE guardrails ALTER COLUMN nom DROP NOT NULL;
+ALTER TABLE guardrails ADD COLUMN IF NOT EXISTS name    TEXT    NOT NULL DEFAULT '';
+ALTER TABLE guardrails ADD COLUMN IF NOT EXISTS enabled BOOLEAN NOT NULL DEFAULT FALSE;
+UPDATE guardrails SET name = nom, enabled = actif WHERE name = '' AND (nom IS NOT NULL OR actif IS NOT NULL);
+
+-- audit_logs
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS ts          TIMESTAMPTZ NOT NULL DEFAULT NOW();
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS entity_type TEXT;
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS entity_id   TEXT;
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS payload     JSONB;
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS ip          TEXT;
+
+-- modeles
+ALTER TABLE modeles ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT '';
+UPDATE modeles SET name = nom WHERE name = '' AND nom IS NOT NULL;
+
+-- skills
+ALTER TABLE skills ADD COLUMN IF NOT EXISTS name    TEXT NOT NULL DEFAULT '';
+ALTER TABLE skills ADD COLUMN IF NOT EXISTS content TEXT;
+UPDATE skills SET name = nom, content = contenu WHERE name = '' AND nom IS NOT NULL;
+
+-- memory_docs
+ALTER TABLE memory_docs ADD COLUMN IF NOT EXISTS title TEXT NOT NULL DEFAULT '';
+UPDATE memory_docs SET title = titre WHERE title = '' AND titre IS NOT NULL;
+
+-- quotas : la table existante a une colonne id en plus, pas de conflit
+-- recurrences
+ALTER TABLE recurrences ADD COLUMN IF NOT EXISTS cron_expr TEXT NOT NULL DEFAULT '';
+ALTER TABLE recurrences ADD COLUMN IF NOT EXISTS human     TEXT;
+ALTER TABLE recurrences ADD COLUMN IF NOT EXISTS active    BOOLEAN NOT NULL DEFAULT TRUE;
+UPDATE recurrences SET cron_expr = cron, active = actif WHERE cron_expr = '' AND cron IS NOT NULL;
+
 -- ─── modeles — Templates de tâches ───────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS modeles (
@@ -113,9 +164,14 @@ CREATE TABLE IF NOT EXISTS skills (
   description TEXT,
   content     TEXT,
   tags        TEXT[],
+  category    TEXT        NOT NULL DEFAULT 'general',
+  status      TEXT        NOT NULL DEFAULT 'active',
   created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE skills ADD COLUMN IF NOT EXISTS category TEXT NOT NULL DEFAULT 'general';
+ALTER TABLE skills ADD COLUMN IF NOT EXISTS status   TEXT NOT NULL DEFAULT 'active';
 
 -- ─── memory_docs — Documents mémoire + embeddings pgvector ───────────────────
 -- embedding vector(1536) : compatible OpenAI text-embedding-3-small/large
@@ -181,7 +237,7 @@ CREATE TABLE IF NOT EXISTS api_keys (
 -- ─── quotas — Suivi de consommation par modèle LLM ───────────────────────────
 
 CREATE TABLE IF NOT EXISTS quotas (
-  model_id   TEXT          PRIMARY KEY,
+  modele     TEXT          PRIMARY KEY,
   used       INTEGER       NOT NULL DEFAULT 0,
   limit_val  INTEGER       NOT NULL DEFAULT 0,
   cost       NUMERIC(10,4) NOT NULL DEFAULT 0,
