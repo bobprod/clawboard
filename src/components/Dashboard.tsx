@@ -10,6 +10,7 @@ import { ModelCostBreakdown } from './ModelCostBreakdown';
 import { AgentChat } from './AgentChat';
 import { ApprovalsWidget } from './ApprovalsWidget';
 import { GatewayProbes } from './GatewayProbes';
+import { GatewayPresence } from './GatewayPresence';
 import { DashboardTour } from './DashboardTour';
 import type { Task } from '../data/mockData';
 
@@ -187,6 +188,11 @@ export const Dashboard = () => {
         <div data-tour="dashboard-probes">
           <GatewayProbes />
         </div>
+      </div>
+
+      {/* ── Presence + placeholder ────────────────────────────────────── */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
+        <GatewayPresence />
       </div>
 
       {/* ── Agent Chat (floating) ──────────────────────────────────────── */}
