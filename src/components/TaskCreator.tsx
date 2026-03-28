@@ -1105,6 +1105,5 @@ export const TaskCreator = () => {
 
       </div>
     </div>
-  </div>
   );
 };
