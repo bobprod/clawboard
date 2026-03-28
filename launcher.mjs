@@ -603,6 +603,7 @@ const getHTML = () => `<!DOCTYPE html>
       <span class="status-label" id="status-label">Demarrage...</span>
     </div>
     <div class="btn-row">
+      <button id="restart-btn" class="btn" onclick="doRestart()" style="display:none;background:rgba(16,185,129,0.12);color:#10b981;border-color:rgba(16,185,129,0.25)">▶ Redémarrer</button>
       <button class="btn btn-stop" onclick="doStop()">⏹ Arreter</button>
     </div>
   </div>
@@ -741,6 +742,11 @@ function startSSE() {
       if (data.__state === 'running') {
         document.getElementById('open-link').classList.add('visible');
       }
+      // Afficher un bouton Redémarrer quand arrêté
+      const restartBtn = document.getElementById('restart-btn');
+      if (restartBtn) {
+        restartBtn.style.display = (data.__state === 'stopped' || data.__state === 'idle') ? 'inline-flex' : 'none';
+      }
       return;
     }
 
@@ -754,8 +760,30 @@ function startSSE() {
 }
 
 async function doStop() {
-  await fetch('/stop', { method: 'POST' });
+  const btn = document.querySelector('.btn-stop');
+  btn.disabled = true;
+  btn.textContent = '⏳ Arrêt...';
+  try {
+    await fetch('/stop', { method: 'POST' });
+  } catch (_) {}
   document.getElementById('open-link').classList.remove('visible');
+  // Revenir à l'écran de démarrage après 1.5s
+  setTimeout(() => {
+    document.getElementById('console-card').style.display = 'none';
+    document.getElementById('login-card').style.display = 'flex';
+    const launchBtn = document.getElementById('launch-btn');
+    if (launchBtn) { launchBtn.disabled = false; launchBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="5 3 19 12 5 21 5 3"/></svg> Demarrer ClawBoard'; }
+    btn.disabled = false;
+    btn.textContent = '⏹ Arreter';
+  }, 1500);
+}
+
+async function doRestart() {
+  // Revenir à l'écran login pour saisir les identifiants et relancer
+  document.getElementById('console-card').style.display = 'none';
+  document.getElementById('login-card').style.display = 'flex';
+  const launchBtn = document.getElementById('launch-btn');
+  if (launchBtn) { launchBtn.disabled = false; launchBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="5 3 19 12 5 21 5 3"/></svg> Demarrer ClawBoard'; }
 }
 
 function escHtml(s) {

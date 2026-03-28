@@ -1293,6 +1293,7 @@ function TabArchives() {
 export const TachesPage = () => {
   const [activeTab, setActiveTab] = useState<TabId>('taches');
   const [tourForceRun, setTourForceRun] = useState(false);
+  const [panelCollapsed, setPanelCollapsed] = useState(false);
   const { data: liveTasks } = useSSE<Task[] | null>('/api/tasks?stream=1', null);
   const tasks: Task[] = liveTasks ?? [];
   const { taskId } = useParams<{ taskId: string }>();
@@ -1305,11 +1306,11 @@ export const TachesPage = () => {
       <TasksTour forceRun={tourForceRun} onClose={() => setTourForceRun(false)} />
       {/* ─── Left: Task list (shrinks when panel is open) ─── */}
       <div style={{
-        flex: taskId ? '0 0 35%' : '1 1 100%',
+        flex: taskId && !panelCollapsed ? '0 0 42%' : '1 1 100%',
         minWidth: 0,
         transition: 'flex 0.3s ease',
         display: 'flex', flexDirection: 'column', gap: '24px',
-        overflowY: 'auto', paddingRight: taskId ? '16px' : '0',
+        overflowY: 'auto', paddingRight: taskId && !panelCollapsed ? '16px' : '0',
       }}>
       {/* Page header */}
       <div data-tour="tasks-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
@@ -1414,11 +1415,30 @@ export const TachesPage = () => {
       {/* ─── Right: Detail panel (slides in) ─── */}
       {taskId && (
         <div style={{
-          flex: '0 0 65%',
-          overflowY: 'auto',
+          flex: panelCollapsed ? '0 0 0%' : '0 0 58%',
+          overflow: panelCollapsed ? 'hidden' : 'auto',
+          transition: 'flex 0.3s ease',
+          position: 'relative',
           animation: 'panelSlideIn 0.25s ease',
         }}>
-          <TaskDetailPanel taskId={taskId} />
+          {/* Collapse / expand toggle */}
+          <button
+            onClick={() => setPanelCollapsed(c => !c)}
+            title={panelCollapsed ? 'Agrandir le panneau' : 'Réduire le panneau'}
+            style={{
+              position: 'sticky', top: '8px', left: '-18px',
+              zIndex: 10, display: 'flex', alignItems: 'center', justifyContent: 'center',
+              width: '28px', height: '28px', borderRadius: '50%',
+              background: 'var(--bg-glass)', border: '1px solid var(--border-subtle)',
+              color: 'var(--text-secondary)', cursor: 'pointer',
+              boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
+              transition: 'all 0.2s', flexShrink: 0,
+              marginBottom: '-28px',
+            }}
+          >
+            <ChevronRight size={14} style={{ transform: panelCollapsed ? 'none' : 'rotate(180deg)', transition: 'transform 0.3s' }} />
+          </button>
+          {!panelCollapsed && <TaskDetailPanel taskId={taskId} />}
         </div>
       )}
 
