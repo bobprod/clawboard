@@ -125,8 +125,9 @@ const PROVIDERS: Provider[] = [
   {
     id: 'nvidia', name: 'NVIDIA NIM', shortName: 'NVIDIA', category: 'Agrégateurs',
     color: '#76b900', logo: '⚙️',
+    keyPrefix: 'nvapi-',
     docsUrl: 'https://build.nvidia.com/settings/api-key',
-    models: ['llama-3.1-nemotron-70b', 'mixtral-8x22b', 'phi-3-medium'],
+    models: ['MiniMax M2.5 · GLM-5 · Kimi K2.5 · DeepSeek R1 · Qwen3 Coder · Llama 4 · +150 modèles'],
   },
   {
     id: 'together', name: 'Together AI', shortName: 'Together', category: 'Agrégateurs',
@@ -369,6 +370,7 @@ const ApiKeysSection = () => {
           placeholder="Rechercher un provider…"
           value={searchFilter}
           onChange={e => setSearchFilter(e.target.value)}
+          autoComplete="off"
           style={{
             flex: 1, minWidth: 180, padding: '8px 12px',
             background: 'rgba(0,0,0,0.2)', border: '1px solid var(--border-subtle)',
@@ -1441,8 +1443,8 @@ const PluginsSection = () => {
           return (
             <div key={plugin.id} style={{ ...card, opacity: busy ? 0.7 : 1, transition: 'opacity 0.2s' }}>
               {/* Icône type */}
-              <div style={{ width: 38, height: 38, borderRadius: 10, background: `${cfg.color}20`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, marginTop: 2 }}>
-                <Icon size={18} color={cfg.color} />
+              <div style={{ width: 38, height: 38, borderRadius: 10, background: `${cfg.color}20`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, marginTop: 2, color: cfg.color }}>
+                <Icon size={18} />
               </div>
 
               {/* Info */}

@@ -129,8 +129,8 @@ export const GatewayPresence = () => {
             return (
               <div key={e.instanceId ?? i} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', background: 'var(--bg-glass)', border: '1px solid var(--border-subtle)', borderRadius: 9 }}>
                 {/* Mode icon */}
-                <div style={{ width: 28, height: 28, borderRadius: 8, background: `${cfg.color}18`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                  <Icon size={13} color={cfg.color} />
+                <div style={{ width: 28, height: 28, borderRadius: 8, background: `${cfg.color}18`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, color: cfg.color }}>
+                  <Icon size={13} />
                 </div>
                 {/* Info */}
                 <div style={{ flex: 1, minWidth: 0 }}>

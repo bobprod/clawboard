@@ -623,7 +623,7 @@ function getDemoResponse(input: string, ctx: TaskChatContext, lia: boolean): str
     const isCode    = q.includes('code') || q.includes('bug') || q.includes('refactor') || q.includes('déve') || q.includes('repo');
     const isContent = q.includes('contenu') || q.includes('article') || q.includes('blog') || q.includes('rédige') || q.includes('post');
     const isSurv    = q.includes('surveill') || q.includes('monitore') || q.includes('alerte') || q.includes('chaque') || q.includes('récurr');
-    const isData    = q.includes('données') || q.includes('analys') || q.includes('rapport') || q.includes('csv');
+    void (q.includes('données') || q.includes('analys') || q.includes('rapport') || q.includes('csv'));
     const isSec     = q.includes('sécurité') || q.includes('vulné') || q.includes('audit') || q.includes('owasp');
 
     if (isScrap) return `Parfait, je prépare un plan de scraping adapté à ton besoin.

@@ -37,7 +37,7 @@ export function LiaPlanPreview({ plan, onExecuted }: Props) {
   const navigate = useNavigate();
   const [executing, setExecuting]   = useState(false);
   const [done, setDone]             = useState(false);
-  const [createdIds, setCreatedIds] = useState<string[]>([]);
+  const [_createdIds, setCreatedIds] = useState<string[]>([]);
   const [progress, setProgress]     = useState<Record<string, StepStatus>>({});
 
   const execute = async () => {

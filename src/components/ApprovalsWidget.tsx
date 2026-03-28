@@ -320,14 +320,17 @@ export const ApprovalsWidget = () => {
 
                   {/* Actions */}
                   <div style={{ display: 'flex', gap: 6, flexShrink: 0, alignItems: 'center' }}>
-                    <ChatTriggerBtn onClick={() => openChat({
-                      taskId: req.taskId,
-                      taskName: req.taskName,
-                      agent: req.agent,
-                      llmModel: req.llmModel,
-                      status: 'approval',
-                      module: 'approval',
-                    })} />
+                    <ChatTriggerBtn
+                      ctx={{
+                        taskId: req.taskId,
+                        taskName: req.taskName,
+                        agent: req.agent,
+                        llmModel: req.llmModel,
+                        status: 'approval',
+                        module: 'approval',
+                      }}
+                      onOpen={openChat}
+                    />
                     {req.payload && (
                       <button
                         onClick={() => setExpanded(isOpen ? null : req.id)}

@@ -119,6 +119,8 @@ let isFirstLaunch = !SETUP_DONE && LAUNCHER_USER === 'admin' && LAUNCHER_PASS ==
 
 let backendProc  = null;
 let frontendProc = null;
+let backendPid   = null;
+let frontendPid  = null;
 let state        = 'idle'; // idle | starting | running | stopped
 let logs         = [];
 const sseClients = new Set();
@@ -195,20 +197,48 @@ function ensureEnv() {
   return true;
 }
 
-// ── Kill propre (Windows ne supporte pas SIGTERM) ─────────────────────────────
+// ── Kill propre (Windows: taskkill /F /T pour tuer l'arbre complet) ───────────
+
+function killByPid(pid) {
+  if (!pid) return;
+  try {
+    if (process.platform === 'win32') {
+      spawnSync('taskkill', ['/F', '/T', '/PID', String(pid)], { stdio: 'ignore' });
+    }
+  } catch (_) {}
+}
 
 function killProc(proc) {
   if (!proc) return;
   try {
     if (process.platform === 'win32') {
-      // Sur Windows, kill() sans signal envoie TerminateProcess (equivalent SIGKILL)
-      proc.kill();
+      // taskkill /F /T tue le processus ET tous ses enfants (arbre complet)
+      spawnSync('taskkill', ['/F', '/T', '/PID', String(proc.pid)], { stdio: 'ignore' });
     } else {
       proc.kill('SIGTERM');
       setTimeout(() => { try { proc.kill('SIGKILL'); } catch (_) {} }, 3000);
     }
   } catch (_) {}
 }
+
+// ── Libere un port en tuant le processus qui l'occupe (Windows) ───────────────
+
+function freePort(port) {
+  if (process.platform !== 'win32') return;
+  try {
+    spawnSync('powershell', [
+      '-NoProfile', '-NonInteractive', '-Command',
+      `$p=(Get-NetTCPConnection -LocalPort ${port} -State Listen -EA SilentlyContinue).OwningProcess; if($p){Stop-Process -Id $p -Force -EA SilentlyContinue}`,
+    ], { stdio: 'ignore' });
+  } catch (_) {}
+}
+
+// ── Nettoyage garanti meme si la fenetre CMD est fermee brutalement ────────────
+
+process.on('exit', () => {
+  killByPid(frontendPid);
+  killByPid(backendPid);
+});
 
 // ── Demarrage des processus ───────────────────────────────────────────────────
 
@@ -227,12 +257,17 @@ function startAll() {
   const nodeExe  = process.execPath;
   const envArgs  = existsSync(join(__dirname, '.env')) ? ['--env-file=.env'] : [];
 
+  // Libere le port backend si un ancien processus l'occupe encore
+  addLog(`⚙ Liberation port ${BACKEND_PORT}...`, 'sys');
+  freePort(BACKEND_PORT);
+
   if (isProd) {
     addLog('▶ Mode Production — demarrage du backend...', 'sys');
 
     backendProc = spawn(nodeExe, [...envArgs, 'server.mjs'], {
       cwd: __dirname, env: { ...process.env },
     });
+    backendPid = backendProc.pid;
     backendProc.stdout.on('data', d => addLog(d.toString(), 'backend'));
     backendProc.stderr.on('data', d => addLog(d.toString(), 'warn'));
     // Si le backend crash avant d'etre pret, annule le poll immediatement
@@ -260,6 +295,7 @@ function startAll() {
     backendProc = spawn(nodeExe, [...envArgs, 'server.mjs'], {
       cwd: __dirname, env: { ...process.env },
     });
+    backendPid = backendProc.pid;
     backendProc.stdout.on('data', d => addLog(d.toString(), 'backend'));
     backendProc.stderr.on('data', d => addLog(d.toString(), 'warn'));
 
@@ -280,6 +316,7 @@ function startAll() {
       frontendProc = spawn(nodeExe, [viteBin], {
         cwd: __dirname, env: { ...process.env },
       });
+      frontendPid = frontendProc.pid;
       frontendProc.stdout.on('data', d => {
         const msg = d.toString();
         addLog(msg, 'frontend');
@@ -303,6 +340,8 @@ function stopAll() {
   [frontendProc, backendProc].forEach(killProc);
   frontendProc = null;
   backendProc  = null;
+  frontendPid  = null;
+  backendPid   = null;
   state = 'idle';
   broadcastState();
 }
@@ -564,6 +603,7 @@ const getHTML = () => `<!DOCTYPE html>
       <span class="status-label" id="status-label">Demarrage...</span>
     </div>
     <div class="btn-row">
+      <button id="restart-btn" class="btn" onclick="doRestart()" style="display:none;background:rgba(16,185,129,0.12);color:#10b981;border-color:rgba(16,185,129,0.25)">▶ Redémarrer</button>
       <button class="btn btn-stop" onclick="doStop()">⏹ Arreter</button>
     </div>
   </div>
@@ -702,6 +742,11 @@ function startSSE() {
       if (data.__state === 'running') {
         document.getElementById('open-link').classList.add('visible');
       }
+      // Afficher un bouton Redémarrer quand arrêté
+      const restartBtn = document.getElementById('restart-btn');
+      if (restartBtn) {
+        restartBtn.style.display = (data.__state === 'stopped' || data.__state === 'idle') ? 'inline-flex' : 'none';
+      }
       return;
     }
 
@@ -715,8 +760,30 @@ function startSSE() {
 }
 
 async function doStop() {
-  await fetch('/stop', { method: 'POST' });
+  const btn = document.querySelector('.btn-stop');
+  btn.disabled = true;
+  btn.textContent = '⏳ Arrêt...';
+  try {
+    await fetch('/stop', { method: 'POST' });
+  } catch (_) {}
   document.getElementById('open-link').classList.remove('visible');
+  // Revenir à l'écran de démarrage après 1.5s
+  setTimeout(() => {
+    document.getElementById('console-card').style.display = 'none';
+    document.getElementById('login-card').style.display = 'flex';
+    const launchBtn = document.getElementById('launch-btn');
+    if (launchBtn) { launchBtn.disabled = false; launchBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="5 3 19 12 5 21 5 3"/></svg> Demarrer ClawBoard'; }
+    btn.disabled = false;
+    btn.textContent = '⏹ Arreter';
+  }, 1500);
+}
+
+async function doRestart() {
+  // Revenir à l'écran login pour saisir les identifiants et relancer
+  document.getElementById('console-card').style.display = 'none';
+  document.getElementById('login-card').style.display = 'flex';
+  const launchBtn = document.getElementById('launch-btn');
+  if (launchBtn) { launchBtn.disabled = false; launchBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="5 3 19 12 5 21 5 3"/></svg> Demarrer ClawBoard'; }
 }
 
 function escHtml(s) {

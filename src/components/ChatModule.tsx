@@ -3,6 +3,7 @@ import {
   Send, Bot, User, Settings2, Trash2, ChevronDown, ChevronRight,
   Zap, Plus, Play, Trash, List, FileText, Clock, RefreshCw, X, Check,
   AlertTriangle, Cpu, Copy, Download, History, PlusCircle,
+  Eye, ShieldCheck, Archive, LayoutTemplate, Repeat2, FolderOpen,
 } from 'lucide-react';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
@@ -39,31 +40,70 @@ interface PermissionConfig {
   default: boolean;
 }
 
+type ExecutionMode = 'plan' | 'auto' | 'confirm';
+
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const MODELS = [
+interface Model {
+  id: string;
+  label: string;
+  provider: string;
+  color: string;
+  group: string;
+  tag?: string; // 'reasoning' | 'vision' | 'code' | 'flagship'
+}
+
+const MODELS: Model[] = [
   // ── Anthropic ──────────────────────────────────────────────────────────────
-  { id: 'claude-sonnet-4-6',                                label: 'Claude Sonnet 4.6',        provider: 'Anthropic',    color: '#8b5cf6' },
-  { id: 'openrouter/anthropic/claude-sonnet-4.6',            label: 'Claude via OpenRouter',    provider: 'OpenRouter',   color: '#6366f1' },
-  // ── NVIDIA NIM — Nemotron ───────────────────────────────────────────────────
-  { id: 'nvidia/llama-3.1-nemotron-ultra-253b-v1',           label: '⚡ Nemotron Ultra 253B',   provider: 'NVIDIA NIM',   color: '#76b900' },
-  { id: 'nvidia/llama-3.3-nemotron-super-49b-v1',            label: 'Nemotron Super 49B',       provider: 'NVIDIA NIM',   color: '#76b900' },
-  { id: 'mistralai/mistral-nemotron',                        label: 'Mistral Nemotron',         provider: 'NVIDIA NIM',   color: '#ff7000' },
-  // ── NVIDIA NIM — Llama ─────────────────────────────────────────────────────
-  { id: 'meta/llama-3.1-405b-instruct',                     label: '⚡ Llama 3.1 405B',        provider: 'NVIDIA NIM',   color: '#0064c8' },
-  { id: 'meta/llama-4-maverick-17b-128e-instruct',           label: 'Llama 4 Maverick (128E)',  provider: 'NVIDIA NIM',   color: '#0064c8' },
-  { id: 'meta/llama-3.3-70b-instruct',                      label: 'Llama 3.3 70B',            provider: 'NVIDIA NIM',   color: '#0064c8' },
-  { id: 'meta/llama-3.1-8b-instruct',                       label: 'Llama 3.1 8B',             provider: 'NVIDIA NIM',   color: '#0064c8' },
-  // ── NVIDIA NIM — DeepSeek & Qwen ───────────────────────────────────────────
-  { id: 'deepseek-ai/deepseek-v3.2',                        label: '⚡ DeepSeek V3.2',         provider: 'NVIDIA NIM',   color: '#1a73e8' },
-  { id: 'qwen/qwq-32b',                                     label: 'QwQ 32B (Raisonnement)',   provider: 'NVIDIA NIM',   color: '#9333ea' },
-  { id: 'qwen/qwen3.5-397b-a17b',                           label: '⚡ Qwen 3.5 397B',         provider: 'NVIDIA NIM',   color: '#9333ea' },
-  // ── NVIDIA NIM — Kimi ──────────────────────────────────────────────────────
-  { id: 'moonshotai/kimi-k2.5',                             label: 'Kimi K2.5',                provider: 'NVIDIA NIM',   color: '#3b82f6' },
-  // ── Google Gemini ──────────────────────────────────────────────────────────
-  { id: 'gemini/gemini-2.5-flash',                          label: 'Gemini 2.5 Flash',         provider: 'Google',       color: '#4285f4' },
-  // ── Local ──────────────────────────────────────────────────────────────────
-  { id: 'ollama/qwen2.5',                                   label: 'Qwen 2.5 (local)',         provider: 'Ollama',       color: '#10b981' },
+  { id: 'claude-sonnet-4-6',                            label: 'Claude Sonnet 4.6',          provider: 'Anthropic',  color: '#d97757', group: 'Anthropic',           tag: 'flagship' },
+  { id: 'openrouter/anthropic/claude-sonnet-4.6',       label: 'Claude via OpenRouter',      provider: 'OpenRouter', color: '#6366f1', group: 'OpenRouter' },
+  // ── NVIDIA NIM — Nemotron ─────────────────────────────────────────────────
+  { id: 'nvidia/llama-3.1-nemotron-ultra-253b-v1',      label: 'Nemotron Ultra 253B',        provider: 'NVIDIA NIM', color: '#76b900', group: 'NIM · Nemotron',      tag: 'flagship' },
+  { id: 'nvidia/llama-3.3-nemotron-super-49b-v1',       label: 'Nemotron Super 49B',         provider: 'NVIDIA NIM', color: '#76b900', group: 'NIM · Nemotron' },
+  { id: 'mistralai/mistral-nemotron',                   label: 'Mistral Nemotron',           provider: 'NVIDIA NIM', color: '#76b900', group: 'NIM · Nemotron' },
+  // ── NVIDIA NIM — Meta Llama ───────────────────────────────────────────────
+  { id: 'meta/llama-4-maverick-17b-128e-instruct',      label: 'Llama 4 Maverick (128E)',    provider: 'NVIDIA NIM', color: '#0064c8', group: 'NIM · Meta Llama',    tag: 'flagship' },
+  { id: 'meta/llama-3.1-405b-instruct',                 label: 'Llama 3.1 405B',             provider: 'NVIDIA NIM', color: '#0064c8', group: 'NIM · Meta Llama' },
+  { id: 'meta/llama-3.3-70b-instruct',                  label: 'Llama 3.3 70B',              provider: 'NVIDIA NIM', color: '#0064c8', group: 'NIM · Meta Llama' },
+  { id: 'meta/llama-3.2-90b-vision-instruct',           label: 'Llama 3.2 90B Vision',       provider: 'NVIDIA NIM', color: '#0064c8', group: 'NIM · Meta Llama',    tag: 'vision' },
+  { id: 'meta/llama-3.1-8b-instruct',                   label: 'Llama 3.1 8B (rapide)',      provider: 'NVIDIA NIM', color: '#0064c8', group: 'NIM · Meta Llama' },
+  // ── NVIDIA NIM — DeepSeek ────────────────────────────────────────────────
+  { id: 'deepseek-ai/deepseek-r1-distill-llama-8b',     label: 'DeepSeek R1 Distill 8B',    provider: 'NVIDIA NIM', color: '#1a73e8', group: 'NIM · DeepSeek',      tag: 'reasoning' },
+  // ── NVIDIA NIM — Qwen ────────────────────────────────────────────────────
+  { id: 'qwen/qwq-32b',                                 label: 'QwQ 32B',                    provider: 'NVIDIA NIM', color: '#ff6a00', group: 'NIM · Qwen',          tag: 'reasoning' },
+  { id: 'qwen/qwen2.5-coder-32b-instruct',              label: 'Qwen2.5 Coder 32B',          provider: 'NVIDIA NIM', color: '#ff6a00', group: 'NIM · Qwen',          tag: 'code' },
+  // ── NVIDIA NIM — Mistral ─────────────────────────────────────────────────
+  { id: 'mistralai/mixtral-8x22b-instruct-v0.1',        label: 'Mixtral 8x22B',              provider: 'NVIDIA NIM', color: '#ff7000', group: 'NIM · Mistral' },
+  { id: 'mistralai/mistral-7b-instruct-v0.3',           label: 'Mistral 7B (rapide)',         provider: 'NVIDIA NIM', color: '#ff7000', group: 'NIM · Mistral' },
+  // ── NVIDIA NIM — Microsoft / OpenAI OSS ──────────────────────────────────
+  { id: 'microsoft/phi-4-multimodal-instruct',          label: 'Phi-4 Multimodal',           provider: 'NVIDIA NIM', color: '#00a4ef', group: 'NIM · Microsoft',      tag: 'vision' },
+  { id: 'microsoft/phi-3-medium-128k-instruct',         label: 'Phi-3 Medium 128K',          provider: 'NVIDIA NIM', color: '#00a4ef', group: 'NIM · Microsoft' },
+  { id: 'openai/gpt-oss-120b',                          label: 'GPT OSS 120B',               provider: 'NVIDIA NIM', color: '#10a37f', group: 'NIM · OpenAI OSS',    tag: 'flagship' },
+  { id: 'openai/gpt-oss-20b',                           label: 'GPT OSS 20B',                provider: 'NVIDIA NIM', color: '#10a37f', group: 'NIM · OpenAI OSS' },
+  // ── NVIDIA NIM — Google Gemma ─────────────────────────────────────────────
+  { id: 'google/gemma-3-27b-it',                        label: 'Gemma 3 27B',                provider: 'NVIDIA NIM', color: '#4285f4', group: 'NIM · Google Gemma',  tag: 'flagship' },
+  { id: 'google/gemma-3-4b-it',                         label: 'Gemma 3 4B (rapide)',         provider: 'NVIDIA NIM', color: '#4285f4', group: 'NIM · Google Gemma' },
+  // ── Google Gemini (direct API) ───────────────────────────────────────────────
+  { id: 'gemini/gemini-2.5-flash',                      label: 'Gemini 2.5 Flash',           provider: 'Google',     color: '#4285f4', group: 'Google Gemini',        tag: 'flagship' },
+  { id: 'gemini/gemini-2.5-pro',                        label: 'Gemini 2.5 Pro',             provider: 'Google',     color: '#4285f4', group: 'Google Gemini',        tag: 'flagship' },
+  { id: 'gemini/gemini-2.0-flash',                      label: 'Gemini 2.0 Flash',           provider: 'Google',     color: '#4285f4', group: 'Google Gemini' },
+  // ── Kimi (MoonshotAI — clé: kimi) ────────────────────────────────────────────
+  { id: 'kimi/kimi-latest',                             label: 'Kimi Latest',                provider: 'Kimi',       color: '#3b82f6', group: 'Kimi (MoonshotAI)',    tag: 'flagship' },
+  { id: 'kimi/kimi-k1.5-long',                          label: 'Kimi K1.5 Long',             provider: 'Kimi',       color: '#3b82f6', group: 'Kimi (MoonshotAI)',    tag: 'reasoning' },
+  { id: 'kimi/moonshot-v1-128k',                        label: 'Moonshot 128K',              provider: 'Kimi',       color: '#3b82f6', group: 'Kimi (MoonshotAI)' },
+  { id: 'kimi/moonshot-v1-32k',                         label: 'Moonshot 32K',               provider: 'Kimi',       color: '#3b82f6', group: 'Kimi (MoonshotAI)' },
+  // ── MiniMax (direct API — clé: minimax) ───────────────────────────────────────
+  { id: 'minimax/MiniMax-Text-01',                      label: 'MiniMax Text 01',            provider: 'MiniMax',    color: '#7c3aed', group: 'MiniMax (direct)',     tag: 'flagship' },
+  { id: 'minimax/abab6.5s-chat',                        label: 'MiniMax abab6.5s',           provider: 'MiniMax',    color: '#7c3aed', group: 'MiniMax (direct)' },
+  // ── Zhipu AI / GLM (direct API — clé: zhipu) ─────────────────────────────────
+  { id: 'zhipu/glm-4-plus',                             label: 'GLM-4 Plus',                 provider: 'Zhipu AI',   color: '#0066ff', group: 'Zhipu AI (GLM)',       tag: 'flagship' },
+  { id: 'zhipu/glm-4-flash',                            label: 'GLM-4 Flash (rapide)',       provider: 'Zhipu AI',   color: '#0066ff', group: 'Zhipu AI (GLM)' },
+  { id: 'zhipu/glm-4-air',                              label: 'GLM-4 Air',                  provider: 'Zhipu AI',   color: '#0066ff', group: 'Zhipu AI (GLM)' },
+  // ── DeepSeek (direct API — clé: deepseek) ────────────────────────────────────
+  { id: 'deepseek/deepseek-chat',                       label: 'DeepSeek Chat (V3)',         provider: 'DeepSeek',   color: '#1a73e8', group: 'DeepSeek (direct)',    tag: 'flagship' },
+  { id: 'deepseek/deepseek-reasoner',                   label: 'DeepSeek R1 (Reasoner)',     provider: 'DeepSeek',   color: '#1a73e8', group: 'DeepSeek (direct)',    tag: 'reasoning' },
+  // ── Ollama (local) ────────────────────────────────────────────────────────────
+  { id: 'ollama/qwen2.5',                               label: 'Qwen 2.5',                   provider: 'Ollama',     color: '#10b981', group: 'Ollama (local)' },
 ];
 
 const PERMISSION_CONFIGS: PermissionConfig[] = [
@@ -75,6 +115,11 @@ const PERMISSION_CONFIGS: PermissionConfig[] = [
   { key: 'list_modeles',    label: 'Voir les modèles',      desc: 'Consulter les templates',           icon: Cpu,      default: true },
   { key: 'list_recurrences',label: 'Voir les récurrences',  desc: 'Consulter les CRONs',               icon: Clock,    default: true },
   { key: 'delete_task',     label: 'Supprimer des tâches',  desc: 'Action irréversible !',             icon: Trash,    danger: true, default: false },
+  { key: 'list_archives',   label: 'Voir les archives',     desc: 'Consulter les exécutions passées',  icon: Archive,  default: true },
+  { key: 'patch_modele',    label: 'Modifier des modèles',  desc: 'Éditer les templates de tâches',    icon: LayoutTemplate, default: false },
+  { key: 'run_recurrence',  label: 'Déclencher récurrences',desc: 'Lancer un CRON manuellement',       icon: Repeat2,  default: false },
+  { key: 'list_directory', label: 'Lire des dossiers',     desc: 'Accès en lecture aux dossiers locaux autorisés', icon: FolderOpen, default: true },
+  { key: 'read_file',      label: 'Lire des fichiers',     desc: 'Accès en lecture aux fichiers locaux autorisés', icon: FileText,   default: true },
 ];
 
 const TOOL_META: Record<string, { label: string; icon: React.ComponentType<{ size?: number }>; color: string }> = {
@@ -84,8 +129,10 @@ const TOOL_META: Record<string, { label: string; icon: React.ComponentType<{ siz
   start_task:       { label: 'Tâche démarrée',   icon: Play,     color: '#3b82f6' },
   delete_task:      { label: 'Tâche supprimée',  icon: Trash,    color: '#ef4444' },
   patch_task:       { label: 'Tâche modifiée',   icon: RefreshCw, color: '#f59e0b' },
-  list_modeles:     { label: 'Modèles listés',   icon: Cpu,      color: '#a855f7' },
-  list_recurrences: { label: 'Récurrences',       icon: Clock,    color: '#06b6d4' },
+  list_modeles:     { label: 'Modèles listés',   icon: Cpu,       color: '#a855f7' },
+  list_recurrences: { label: 'Récurrences',       icon: Clock,     color: '#06b6d4' },
+  list_directory:   { label: 'Dossier lu',        icon: FolderOpen,color: '#14b8a6' },
+  read_file:        { label: 'Fichier lu',         icon: FileText,  color: '#06b6d4' },
 };
 
 function uid() { return `${Date.now()}-${Math.random().toString(36).slice(2)}`; }
@@ -388,67 +435,222 @@ const PermissionsPanel = ({
 
 // ─── ModelSelector ────────────────────────────────────────────────────────────
 
+const TAG_STYLES: Record<string, { bg: string; color: string; label: string }> = {
+  flagship:  { bg: 'rgba(251,191,36,0.15)',  color: '#f59e0b', label: '⚡' },
+  reasoning: { bg: 'rgba(168,85,247,0.15)',  color: '#a855f7', label: '🧠' },
+  vision:    { bg: 'rgba(59,130,246,0.15)',  color: '#3b82f6', label: '👁' },
+  code:      { bg: 'rgba(16,185,129,0.15)',  color: '#10b981', label: '💻' },
+};
+
 const ModelSelector = ({ model, onChange }: { model: string; onChange: (m: string) => void }) => {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-  const current = MODELS.find(m => m.id === model) || MODELS[0];
+  const [open, setOpen]     = useState(false);
+  const [search, setSearch] = useState('');
+  const ref                 = useRef<HTMLDivElement>(null);
+  const searchRef           = useRef<HTMLInputElement>(null);
+  const current             = MODELS.find(m => m.id === model) || MODELS[0];
 
   useEffect(() => {
-    const h = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+    const h = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) { setOpen(false); setSearch(''); } };
     document.addEventListener('mousedown', h);
     return () => document.removeEventListener('mousedown', h);
   }, []);
 
+  useEffect(() => {
+    if (open) setTimeout(() => searchRef.current?.focus(), 50);
+    else setSearch('');
+  }, [open]);
+
+  const q = search.toLowerCase();
+  const filtered = q
+    ? MODELS.filter(m => m.label.toLowerCase().includes(q) || m.group.toLowerCase().includes(q) || m.provider.toLowerCase().includes(q))
+    : MODELS;
+
+  // Group by group field
+  const groups = Array.from(new Set(filtered.map(m => m.group)));
+
+  // Platform-level headers for NIM grouping
+  const isNIM = (g: string) => g.startsWith('NIM ·');
+  const nimGroups = groups.filter(isNIM);
+  const otherGroups = groups.filter(g => !isNIM(g));
+  const orderedGroups = [...otherGroups.filter(g => g === 'Anthropic'), ...otherGroups.filter(g => g === 'OpenRouter'), ...(nimGroups.length ? ['__NIM__'] : []), ...otherGroups.filter(g => !['Anthropic', 'OpenRouter'].includes(g))];
+
   return (
     <div ref={ref} style={{ position: 'relative' }}>
+      {/* Trigger button */}
       <button
         onClick={() => setOpen(o => !o)}
         style={{
           display: 'flex', alignItems: 'center', gap: 8,
-          background: 'rgba(255,255,255,0.06)', border: '1px solid var(--border-subtle)',
+          background: open ? 'rgba(255,255,255,0.1)' : 'rgba(255,255,255,0.06)',
+          border: `1px solid ${open ? 'rgba(139,92,246,0.4)' : 'var(--border-subtle)'}`,
           borderRadius: 20, padding: '6px 12px', cursor: 'pointer',
           color: 'var(--text-secondary)', fontSize: '0.82rem', fontWeight: 600,
-          transition: 'background 0.2s',
+          transition: 'all 0.2s', maxWidth: 200,
         }}
-        onMouseOver={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.1)')}
-        onMouseOut={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.06)')}
       >
-        <span style={{ width: 10, height: 10, borderRadius: '50%', background: current.color, flexShrink: 0, boxShadow: `0 0 6px ${current.color}88` }} />
-        <span>{current.label}</span>
-        <ChevronDown size={12} />
+        <span style={{ width: 9, height: 9, borderRadius: '50%', background: current.color, flexShrink: 0, boxShadow: `0 0 6px ${current.color}99` }} />
+        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{current.label}</span>
+        <ChevronDown size={12} style={{ flexShrink: 0, opacity: 0.6 }} />
       </button>
+
       {open && (
         <div style={{
-          position: 'absolute', top: 'calc(100% + 6px)', left: 0, zIndex: 50,
+          position: 'absolute', top: 'calc(100% + 8px)', left: 0, zIndex: 200,
           background: 'var(--bg-surface-elevated)', border: '1px solid var(--border-subtle)',
-          borderRadius: 10, padding: 6, minWidth: 240, boxShadow: 'var(--shadow-md)',
+          borderRadius: 14, width: 340, maxHeight: 520,
+          boxShadow: '0 20px 60px rgba(0,0,0,0.4)', display: 'flex', flexDirection: 'column',
+          overflow: 'hidden',
         }}>
-          {MODELS.map(m => (
-            <button
-              key={m.id}
-              onClick={() => { onChange(m.id); setOpen(false); }}
+          {/* Search */}
+          <div style={{ padding: '10px 10px 6px', borderBottom: '1px solid var(--border-subtle)', flexShrink: 0 }}>
+            <input
+              ref={searchRef}
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="🔍 Rechercher un modèle…"
               style={{
-                width: '100%', display: 'flex', alignItems: 'center', gap: 10,
-                padding: '9px 12px', borderRadius: 8,
-                background: model === m.id ? 'rgba(139,92,246,0.12)' : 'transparent',
-                border: '1px solid transparent', cursor: 'pointer',
-                color: model === m.id ? 'var(--brand-accent)' : 'var(--text-secondary)',
-                textAlign: 'left', fontSize: '0.83rem',
-                transition: 'background 0.15s',
+                width: '100%', padding: '7px 12px', borderRadius: 8, fontSize: '0.82rem',
+                background: 'rgba(0,0,0,0.25)', border: '1px solid var(--border-subtle)',
+                color: 'var(--text-primary)', outline: 'none',
               }}
-              onMouseOver={e => { if (model !== m.id) e.currentTarget.style.background = 'rgba(255,255,255,0.05)'; }}
-              onMouseOut={e => { if (model !== m.id) e.currentTarget.style.background = 'transparent'; }}
-            >
-              <span style={{ width: 10, height: 10, borderRadius: '50%', background: m.color, flexShrink: 0 }} />
-              <div>
-                <div style={{ fontWeight: 600 }}>{m.label}</div>
-                <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>{m.provider}</div>
+            />
+          </div>
+
+          {/* Legend tags */}
+          <div style={{ display: 'flex', gap: 6, padding: '6px 10px 4px', flexShrink: 0 }}>
+            {Object.entries(TAG_STYLES).map(([k, t]) => (
+              <span key={k} style={{ fontSize: '0.68rem', padding: '2px 6px', borderRadius: 10, background: t.bg, color: t.color, fontWeight: 600 }}>
+                {t.label} {k}
+              </span>
+            ))}
+          </div>
+
+          {/* Model list */}
+          <div style={{ flex: 1, overflowY: 'auto', padding: '4px 6px 8px' }}>
+            {filtered.length === 0 && (
+              <div style={{ padding: '20px', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.82rem' }}>
+                Aucun modèle trouvé
               </div>
-              {model === m.id && <Check size={14} style={{ marginLeft: 'auto' }} />}
-            </button>
-          ))}
+            )}
+            {orderedGroups.map(groupKey => {
+              if (groupKey === '__NIM__') {
+                // NVIDIA NIM platform header + all NIM subgroups
+                return (
+                  <div key="NIM">
+                    {/* NVIDIA NIM platform header */}
+                    <div style={{
+                      display: 'flex', alignItems: 'center', gap: 8,
+                      padding: '10px 8px 4px', marginTop: 4,
+                    }}>
+                      <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#76b900', boxShadow: '0 0 6px #76b90099' }} />
+                      <span style={{ fontSize: '0.72rem', fontWeight: 800, color: '#76b900', textTransform: 'uppercase', letterSpacing: 1 }}>
+                        NVIDIA NIM — clé nvapi-…
+                      </span>
+                    </div>
+                    {nimGroups.map(g => {
+                      const groupModels = filtered.filter(m => m.group === g);
+                      if (!groupModels.length) return null;
+                      const subName = g.replace('NIM · ', '');
+                      return (
+                        <div key={g}>
+                          <div style={{ padding: '6px 10px 2px', fontSize: '0.68rem', fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                            {subName}
+                          </div>
+                          {groupModels.map(m => <ModelRow key={m.id} m={m} selected={model === m.id} onSelect={() => { onChange(m.id); setOpen(false); }} />)}
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              }
+              const groupModels = filtered.filter(m => m.group === groupKey);
+              if (!groupModels.length) return null;
+              const gc = groupModels[0].color;
+              return (
+                <div key={groupKey}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 8px 4px', marginTop: 4 }}>
+                    <span style={{ width: 8, height: 8, borderRadius: '50%', background: gc, boxShadow: `0 0 6px ${gc}88` }} />
+                    <span style={{ fontSize: '0.72rem', fontWeight: 800, color: gc, textTransform: 'uppercase', letterSpacing: 1 }}>
+                      {groupKey}
+                    </span>
+                  </div>
+                  {groupModels.map(m => <ModelRow key={m.id} m={m} selected={model === m.id} onSelect={() => { onChange(m.id); setOpen(false); }} />)}
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Footer: current model */}
+          <div style={{ padding: '8px 12px', borderTop: '1px solid var(--border-subtle)', flexShrink: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ width: 8, height: 8, borderRadius: '50%', background: current.color }} />
+            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Actuel :</span>
+            <span style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-primary)' }}>{current.label}</span>
+          </div>
         </div>
       )}
+    </div>
+  );
+};
+
+const ModelRow = ({ m, selected, onSelect }: { m: Model; selected: boolean; onSelect: () => void }) => {
+  const tag = m.tag ? TAG_STYLES[m.tag] : null;
+  return (
+    <button
+      onClick={onSelect}
+      style={{
+        width: '100%', display: 'flex', alignItems: 'center', gap: 8,
+        padding: '7px 10px', borderRadius: 8, border: 'none', cursor: 'pointer',
+        background: selected ? `${m.color}18` : 'transparent',
+        textAlign: 'left', transition: 'background 0.12s',
+        outline: selected ? `1px solid ${m.color}44` : 'none',
+      }}
+      onMouseOver={e => { if (!selected) e.currentTarget.style.background = 'rgba(255,255,255,0.05)'; }}
+      onMouseOut={e => { if (!selected) e.currentTarget.style.background = 'transparent'; }}
+    >
+      <span style={{ width: 8, height: 8, borderRadius: '50%', background: m.color, flexShrink: 0 }} />
+      <span style={{ flex: 1, fontSize: '0.83rem', fontWeight: selected ? 700 : 500, color: selected ? m.color : 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        {m.label}
+      </span>
+      {tag && (
+        <span style={{ fontSize: '0.65rem', padding: '1px 5px', borderRadius: 8, background: tag.bg, color: tag.color, fontWeight: 700, flexShrink: 0 }}>
+          {tag.label}
+        </span>
+      )}
+      {selected && <Check size={13} style={{ flexShrink: 0, color: m.color }} />}
+    </button>
+  );
+};
+
+// ─── ExecutionModeSelector ────────────────────────────────────────────────────
+
+const EXEC_MODES: { id: ExecutionMode; label: string; icon: React.ReactNode; color: string; desc: string }[] = [
+  { id: 'plan',    label: 'Plan',      icon: <Eye size={13} />,          color: '#3b82f6', desc: 'Planifie et attend votre validation' },
+  { id: 'auto',    label: 'Auto',      icon: <Zap size={13} />,          color: '#10b981', desc: 'Exécute tout automatiquement' },
+  { id: 'confirm', label: 'Confirmer', icon: <ShieldCheck size={13} />,  color: '#f59e0b', desc: 'Demande avant chaque action critique' },
+];
+
+const ExecutionModeSelector = ({ mode, onChange }: { mode: ExecutionMode; onChange: (m: ExecutionMode) => void }) => {
+  const active = EXEC_MODES.find(m => m.id === mode)!;
+  return (
+    <div title={active.desc} style={{ display: 'flex', alignItems: 'center', background: 'rgba(255,255,255,0.04)', border: '1px solid var(--border-subtle)', borderRadius: 20, padding: '3px', gap: 2 }}>
+      {EXEC_MODES.map(m => (
+        <button
+          key={m.id}
+          onClick={() => onChange(m.id)}
+          title={m.desc}
+          style={{
+            display: 'flex', alignItems: 'center', gap: 5,
+            padding: '4px 10px', borderRadius: 16, border: 'none', cursor: 'pointer',
+            fontSize: '0.78rem', fontWeight: 600, transition: 'all 0.2s',
+            background: mode === m.id ? `${m.color}22` : 'transparent',
+            color: mode === m.id ? m.color : 'var(--text-muted)',
+            boxShadow: mode === m.id ? `0 0 0 1px ${m.color}55` : 'none',
+          }}
+        >
+          {m.icon}
+          <span>{m.label}</span>
+        </button>
+      ))}
     </div>
   );
 };
@@ -470,6 +672,12 @@ Je peux gérer votre système directement depuis ce chat :
 • ➕ *"Crée une tâche nommée Mon Audit"* — créer une tâche
 • 🗑️ *"Supprime tsk_005"* — supprimer (si autorisé)
 • 📊 *"Montre-moi les modèles"* — voir les templates
+• 📂 *"Montre mes archives"* — historique des exécutions
+
+**Modes d'exécution** (sélecteur en haut) :
+• 🗺️ **Plan** — je planifie, vous validez avant chaque action
+• ⚡ **Auto** — j'exécute tout automatiquement
+• ✋ **Confirmer** — je demande confirmation avant chaque action critique
 
 Sélectionnez votre modèle IA et configurez les permissions avec ⚙️`,
   toolCalls: [],
@@ -487,6 +695,8 @@ interface Conversation {
 }
 
 const STORAGE_KEY = 'clawboard-chat-history';
+const ACTIVE_CONV_KEY = 'clawboard-chat-active';
+const EXEC_MODE_KEY = 'clawboard-exec-mode';
 const MAX_CONVS = 30;
 
 function loadConversations(): Conversation[] {
@@ -574,17 +784,34 @@ const ConversationHistory = ({
 // ─── ChatModule ───────────────────────────────────────────────────────────────
 
 export const ChatModule = () => {
-  const [convId, setConvId]           = useState(() => uid());
   const [conversations, setConvs]     = useState<Conversation[]>(loadConversations);
-  const [messages, setMessages]       = useState<ChatMessage[]>([WELCOME]);
+  const [convId, setConvId]           = useState<string>(() => {
+    const savedId = localStorage.getItem(ACTIVE_CONV_KEY);
+    if (savedId) return savedId;
+    return uid();
+  });
+  const [messages, setMessages]       = useState<ChatMessage[]>(() => {
+    const savedId = localStorage.getItem(ACTIVE_CONV_KEY);
+    if (savedId) {
+      try {
+        const convs = loadConversations();
+        const active = convs.find(c => c.id === savedId);
+        if (active) return active.messages;
+      } catch { /* fall through */ }
+    }
+    return [WELCOME];
+  });
   const [input, setInput]             = useState('');
   const [isLoading, setIsLoading]     = useState(false);
   const [isThinking, setIsThinking]   = useState(false);
-  const [model, setModel]             = useState(() => localStorage.getItem('lia-model') || MODELS[0].id);
+  const [model, setModel]             = useState(() => { const saved = localStorage.getItem('lia-model'); return saved && MODELS.some(m => m.id === saved) ? saved : 'meta/llama-3.3-70b-instruct'; });
   const [permissions, setPermissions] = useState<Record<string, boolean>>(() => {
     try { return JSON.parse(localStorage.getItem('lia-permissions') || '{}'); }
     catch { return {}; }
   });
+  const [executionMode, setExecutionMode] = useState<ExecutionMode>(() =>
+    (localStorage.getItem(EXEC_MODE_KEY) as ExecutionMode) || 'confirm'
+  );
   const [showPerms, setShowPerms]     = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [keySynced, setKeySynced]     = useState(false);
@@ -632,7 +859,9 @@ export const ChatModule = () => {
 
   // ── Start a new conversation ────────────────────────────────────────────────
   const newChat = useCallback(() => {
-    setConvId(uid());
+    const newId = uid();
+    setConvId(newId);
+    localStorage.setItem(ACTIVE_CONV_KEY, newId);
     setMessages([WELCOME]);
     setInput('');
     setShowHistory(false);
@@ -691,6 +920,12 @@ export const ChatModule = () => {
   // Persist permissions
   useEffect(() => { localStorage.setItem('lia-permissions', JSON.stringify(permissions)); }, [permissions]);
 
+  // Persist active conversation ID
+  useEffect(() => { localStorage.setItem(ACTIVE_CONV_KEY, convId); }, [convId]);
+
+  // Persist execution mode
+  useEffect(() => { localStorage.setItem(EXEC_MODE_KEY, executionMode); }, [executionMode]);
+
   // Auto-scroll
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
 
@@ -726,7 +961,7 @@ export const ChatModule = () => {
       const res = await apiFetch(`${BASE}/api/chat/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: history, model, permissions: effectivePerms }),
+        body: JSON.stringify({ messages: history, model, permissions: effectivePerms, executionMode }),
       });
 
       if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
@@ -836,6 +1071,8 @@ export const ChatModule = () => {
           </div>
 
           <ModelSelector model={model} onChange={setModel} />
+
+          <ExecutionModeSelector mode={executionMode} onChange={setExecutionMode} />
 
           {/* API key status badge */}
           {configuredCount > 0 && (
@@ -1048,6 +1285,10 @@ export const ChatModule = () => {
             Modèle : <strong style={{ color: activeModel.color }}>{activeModel.label}</strong>
             {' · '}
             {enabledCount} permission{enabledCount > 1 ? 's' : ''} active{enabledCount > 1 ? 's' : ''}
+            {' · '}
+            Mode : <strong style={{ color: EXEC_MODES.find(m => m.id === executionMode)!.color }}>
+              {EXEC_MODES.find(m => m.id === executionMode)!.label}
+            </strong>
           </div>
         </div>
       </div>

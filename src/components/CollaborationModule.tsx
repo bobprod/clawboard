@@ -93,7 +93,7 @@ const CHANNEL_DEFS: ChannelDef[] = [
 
 // ── ChannelsPanel ─────────────────────────────────────────────────────────────
 
-const inputStyle: React.CSSProperties = {
+const channelInputStyle: React.CSSProperties = {
   width: '100%', padding: '9px 12px', borderRadius: 8, boxSizing: 'border-box',
   background: 'var(--bg-glass)', border: '1px solid var(--border-subtle)',
   color: 'var(--text-primary)', fontSize: 13, outline: 'none', fontFamily: 'inherit',
@@ -157,8 +157,8 @@ const ChannelsPanel = () => {
           <div key={def.id} style={{ background: 'var(--bg-glass)', border: `1px solid ${cfg.enabled ? def.color + '44' : 'var(--border-subtle)'}`, borderRadius: 14, padding: '18px 20px', transition: 'border-color 0.2s' }}>
             {/* Header */}
             <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: cfg.enabled ? 16 : 0 }}>
-              <div style={{ width: 36, height: 36, borderRadius: 10, background: `${def.color}20`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                <Icon size={17} color={def.color} />
+              <div style={{ width: 36, height: 36, borderRadius: 10, background: `${def.color}20`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, color: def.color }}>
+                <Icon size={17} />
               </div>
               <div style={{ flex: 1 }}>
                 <div style={{ fontWeight: 700, fontSize: 14, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -194,10 +194,10 @@ const ChannelsPanel = () => {
                   <div key={f.key}>
                     <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 5 }}>{f.label}</div>
                     <input
-                      style={{ ...inputStyle, fontFamily: f.secret ? 'var(--mono)' : 'inherit' }}
+                      style={{ ...channelInputStyle, fontFamily: f.secret ? 'var(--mono)' : 'inherit' }}
                       type={f.secret ? 'password' : 'text'}
                       placeholder={f.placeholder}
-                      value={(cfg as Record<string, string>)[f.key] ?? ''}
+                      value={(cfg as unknown as Record<string, string>)[f.key] ?? ''}
                       onChange={e => update(def.id, { [f.key]: e.target.value })}
                     />
                   </div>
@@ -355,8 +355,8 @@ function AddModal({ onAdd, onClose }: { onAdd: (i: Instance) => void; onClose: (
 function SyncMemoryModal({ instance, onClose }: { instance: Instance; onClose: () => void }) {
   const [state, setState] = useState<'loading' | 'preview' | 'success' | 'error'>('loading');
   const [remoteContent, setRemoteContent] = useState('');
-  const [error, setError] = useState('');
   const [copied, setCopied] = useState(false);
+  const [error] = useState('');
 
   useEffect(() => {
     (async () => {
@@ -456,7 +456,6 @@ function SyncMemoryModal({ instance, onClose }: { instance: Instance; onClose: (
             <button onClick={onClose} style={{ padding: '9px 22px', borderRadius: 8, background: 'var(--bg-glass)', border: '1px solid var(--border-subtle)', color: 'var(--text-secondary)', cursor: 'pointer', fontWeight: 600, fontSize: 13 }}>Fermer</button>
           </div>
         )}
-        {void error}
       </div>
     </div>
   );

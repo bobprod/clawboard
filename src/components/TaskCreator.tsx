@@ -502,6 +502,17 @@ export const TaskCreator = () => {
   // ── Create task ────────────────────────────────────────────────────────────
   const handleCreate = async (andRun = false) => {
     if (!canSave) return;
+
+    // ── Inline validations (block submit) ────────────────────────────────────
+    let blocked = false;
+    if (!llmModel) { setModelError(true); blocked = true; }
+    else setModelError(false);
+
+    if (canal && !destinataire.trim()) { setDestError(true); blocked = true; }
+    else setDestError(false);
+
+    if (blocked) return;
+
     setSaving(true); setSaveError(null);
     try {
       const cleanObjectives = objectives.filter(o => o.trim());
@@ -580,33 +591,60 @@ export const TaskCreator = () => {
         onClose={() => setTourForceRun(false)}
       />
 
-      {/* ── Draft restored banner ──────────────────────────────────────────── */}
-      {showDraftBanner && (
+      {/* ── Draft ask-first banner ─────────────────────────────────────────── */}
+      {showDraftBanner && pendingDraft && (
         <div style={{
-          display: 'flex', alignItems: 'center', gap: 10,
-          padding: '10px 16px', borderRadius: 10,
-          background: 'rgba(59,130,246,0.08)', border: '1px solid rgba(59,130,246,0.25)',
-          color: 'var(--brand-primary)', fontSize: '13px',
+          display: 'flex', alignItems: 'center', gap: 12,
+          padding: '12px 16px', borderRadius: 10,
+          background: 'rgba(59,130,246,0.07)', border: '1px solid rgba(59,130,246,0.28)',
+          color: 'var(--text-primary)', fontSize: '13px',
         }}>
-          <RotateCcw size={14} />
-          <span style={{ flex: 1 }}>Brouillon restauré — votre dernière session a été récupérée automatiquement.</span>
+          <RotateCcw size={15} style={{ color: 'var(--brand-primary)', flexShrink: 0 }} />
+          <span style={{ flex: 1, color: 'var(--text-secondary)' }}>
+            📝 Tu avais une tâche en cours —{' '}
+            <strong style={{ color: 'var(--text-primary)' }}>
+              {pendingDraft.name || 'brouillon sans titre'}
+            </strong>
+            . Restaurer le brouillon ?
+          </span>
+          <button
+            onClick={() => {
+              // Apply pending draft to form
+              const d = pendingDraft;
+              if (d.name)               setName(d.name);
+              if (d.instructions)       setInstructions(d.instructions);
+              if (d.skillName)          setSkillName(d.skillName ?? '');
+              if (d.llmModel)           setLlmModel(d.llmModel ?? '');
+              if (d.agent)              setAgent(d.agent ?? 'main');
+              if (d.canal)              setCanal(d.canal ?? 'telegram');
+              if (d.destinataire)       setDestinataire(d.destinataire ?? '');
+              if (d.timeoutMin)         setTimeoutMin(d.timeoutMin ?? 30);
+              if (d.objectives?.length) setObjectives(d.objectives);
+              if (d.disablePreInstructions !== undefined) setDisablePreInstructions(d.disablePreInstructions);
+              setPendingDraft(null);
+              setShowDraftBanner(false);
+            }}
+            style={{
+              padding: '5px 14px', borderRadius: 7, fontWeight: 700, fontSize: '12px',
+              background: 'rgba(59,130,246,0.15)', border: '1px solid rgba(59,130,246,0.4)',
+              color: 'var(--brand-primary)', cursor: 'pointer', whiteSpace: 'nowrap',
+            }}
+          >
+            Restaurer
+          </button>
           <button
             onClick={() => {
               localStorage.removeItem(DRAFT_KEY);
-              setName(''); setInstructions(''); setSkillName(''); setLlmModel('');
-              setAgent('main'); setCanal('telegram'); setDestinataire('');
-              setTimeoutMin(30); setObjectives([]); setDisablePreInstructions(false);
+              setPendingDraft(null);
               setShowDraftBanner(false);
             }}
-            style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--brand-primary)', display: 'flex', alignItems: 'center', gap: 4, fontSize: '12px', fontWeight: 600 }}
+            style={{
+              padding: '5px 14px', borderRadius: 7, fontWeight: 600, fontSize: '12px',
+              background: 'var(--bg-glass)', border: '1px solid var(--border-subtle)',
+              color: 'var(--text-secondary)', cursor: 'pointer', whiteSpace: 'nowrap',
+            }}
           >
-            <X size={12} /> Effacer
-          </button>
-          <button
-            onClick={() => setShowDraftBanner(false)}
-            style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', display: 'flex' }}
-          >
-            <X size={14} />
+            Ignorer
           </button>
         </div>
       )}
@@ -656,29 +694,51 @@ export const TaskCreator = () => {
       {/* ── Cancel confirmation inline ─────────────────────────────────────── */}
       {confirmCancel && (
         <div style={{
-          display: 'flex', alignItems: 'center', gap: 12,
-          padding: '12px 16px', borderRadius: 10,
-          background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.3)',
-          color: '#ef4444', fontSize: '13px',
+          position: 'fixed', inset: 0, zIndex: 9000,
+          background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(4px)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
         }}>
-          <AlertTriangle size={15} />
-          <span style={{ flex: 1 }}>Annuler et perdre les modifications non sauvegardées ?</span>
-          <button
-            onClick={() => { localStorage.removeItem(DRAFT_KEY); navigate('/tasks'); }}
-            style={{
-              padding: '5px 14px', borderRadius: 7, fontWeight: 700, fontSize: '12px',
-              background: 'rgba(239,68,68,0.15)', border: '1px solid rgba(239,68,68,0.4)',
-              color: '#ef4444', cursor: 'pointer',
-            }}
-          >Oui, quitter</button>
-          <button
-            onClick={() => setConfirmCancel(false)}
-            style={{
-              padding: '5px 14px', borderRadius: 7, fontWeight: 700, fontSize: '12px',
-              background: 'var(--bg-glass)', border: '1px solid var(--border-subtle)',
-              color: 'var(--text-secondary)', cursor: 'pointer',
-            }}
-          >Continuer</button>
+          <div style={{
+            background: 'var(--bg-surface)', border: '1px solid var(--border-subtle)',
+            borderRadius: 14, padding: 28, maxWidth: 420, width: '100%',
+            boxShadow: '0 20px 60px rgba(0,0,0,0.4)',
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14 }}>
+              <div style={{ padding: 10, background: 'rgba(239,68,68,0.1)', borderRadius: 10 }}>
+                <AlertTriangle size={20} color="#ef4444" />
+              </div>
+              <div>
+                <div style={{ fontWeight: 700, fontSize: '0.95rem', color: 'var(--text-primary)' }}>
+                  Contenu non sauvegardé
+                </div>
+                <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: 2 }}>
+                  Tu as du contenu non sauvegardé. Quitter quand même ?
+                </div>
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 20 }}>
+              <button
+                onClick={() => setConfirmCancel(false)}
+                style={{
+                  padding: '8px 20px', borderRadius: 8, fontWeight: 600, fontSize: '13px',
+                  background: 'var(--bg-glass)', border: '1px solid var(--border-subtle)',
+                  color: 'var(--text-secondary)', cursor: 'pointer',
+                }}
+              >
+                Rester
+              </button>
+              <button
+                onClick={() => { localStorage.removeItem(DRAFT_KEY); navigate('/tasks'); }}
+                style={{
+                  padding: '8px 20px', borderRadius: 8, fontWeight: 700, fontSize: '13px',
+                  background: 'rgba(239,68,68,0.15)', border: '1px solid rgba(239,68,68,0.4)',
+                  color: '#ef4444', cursor: 'pointer',
+                }}
+              >
+                Quitter
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -755,10 +815,11 @@ export const TaskCreator = () => {
           <Field label="Modèle LLM *" hint="Choisir selon la complexité et la sensibilité des données">
             <select
               value={llmModel}
-              onChange={e => setLlmModel(e.target.value)}
+              onChange={e => { setLlmModel(e.target.value); if (e.target.value) setModelError(false); }}
               style={{
                 ...inputStyle, cursor: 'pointer',
-                borderColor: name.trim() && !llmModel ? 'rgba(239,68,68,0.5)' : undefined,
+                borderColor: modelError ? 'rgba(239,68,68,0.7)' : (name.trim() && !llmModel ? 'rgba(239,68,68,0.5)' : undefined),
+                boxShadow: modelError ? '0 0 0 2px rgba(239,68,68,0.15)' : undefined,
               }}
             >
               <option value="">— Sélectionner —</option>
@@ -766,6 +827,15 @@ export const TaskCreator = () => {
                 <option key={m.id} value={m.id}>{m.label}</option>
               ))}
             </select>
+            {modelError && (
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: 6,
+                marginTop: 5, fontSize: '12px', color: '#ef4444',
+              }}>
+                <AlertCircle size={12} />
+                ⚠️ Aucun modèle sélectionné — l'agent ne saura pas quel LLM utiliser
+              </div>
+            )}
           </Field>
         </div>
 
@@ -853,13 +923,15 @@ export const TaskCreator = () => {
                   ))}
                 </div>
               )}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 5, flex: 1 }}>
               <div style={{ display: 'flex', gap: 8 }}>
                 <input
                   value={destinataire}
-                  onChange={e => setDestinataire(e.target.value)}
+                  onChange={e => { setDestinataire(e.target.value); if (e.target.value.trim()) setDestError(false); }}
                   style={{
                     ...inputStyle, fontFamily: 'var(--mono)', flex: 1,
-                    borderColor: name.trim() && !destinataire.trim() ? 'rgba(245,158,11,0.5)' : undefined,
+                    borderColor: destError ? 'rgba(239,68,68,0.7)' : (name.trim() && !destinataire.trim() ? 'rgba(245,158,11,0.5)' : undefined),
+                    boxShadow: destError ? '0 0 0 2px rgba(239,68,68,0.15)' : undefined,
                   }}
                   placeholder={
                     canal === 'telegram' ? '@username ou -100xxxxx' :
@@ -890,6 +962,16 @@ export const TaskCreator = () => {
                 {((canal === 'discord' && connMode === 'webhook') || canal === 'webhook') && (
                   <WebhookTestButton url={destinataire} />
                 )}
+              </div>
+              {destError && (
+                <div style={{
+                  display: 'flex', alignItems: 'center', gap: 6,
+                  fontSize: '12px', color: '#ef4444',
+                }}>
+                  <AlertCircle size={12} />
+                  ⚠️ Canal sélectionné mais destinataire vide — le résultat ne sera pas livré
+                </div>
+              )}
               </div>
             </Field>
           </div>
@@ -945,30 +1027,6 @@ export const TaskCreator = () => {
             </button>
           </div>
 
-          {/* Save as model toggle */}
-          <div
-            data-tour="creator-save-model"
-            style={{
-              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-              padding: '10px 14px', background: 'var(--bg-glass)', borderRadius: 8,
-              border: `1px solid ${saveAsModel ? 'rgba(139,92,246,0.35)' : 'var(--border-subtle)'}`,
-              transition: 'border-color 0.2s',
-            }}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <BookmarkPlus size={16} style={{ color: saveAsModel ? 'var(--brand-accent)' : 'var(--text-muted)' }} />
-              <div>
-                <div style={{ fontWeight: 600, fontSize: '0.875rem', color: 'var(--text-primary)' }}>Enregistrer aussi comme modèle</div>
-                <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: 2 }}>Réutilisable depuis l'onglet Modèles</div>
-              </div>
-            </div>
-            <button onClick={() => setSaveAsModel(v => !v)} style={{
-              background: 'none', border: 'none', cursor: 'pointer',
-              color: saveAsModel ? 'var(--brand-accent)' : 'var(--text-muted)',
-            }}>
-              {saveAsModel ? <ToggleRight size={28} /> : <ToggleLeft size={28} />}
-            </button>
-          </div>
         </div>
 
         {/* Validation warnings */}
@@ -982,7 +1040,42 @@ export const TaskCreator = () => {
         )}
 
         {/* Actions */}
-        <div data-tour="creator-actions" style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', paddingTop: 4 }}>
+        <div data-tour="creator-actions" style={{ display: 'flex', flexDirection: 'column', gap: 12, paddingTop: 4 }}>
+
+          {/* Checkbox save as model */}
+          <label
+            data-tour="creator-save-model"
+            style={{
+              display: 'flex', alignItems: 'center', gap: 10,
+              cursor: 'pointer', userSelect: 'none',
+              padding: '9px 14px',
+              background: saveAsModel ? 'rgba(139,92,246,0.06)' : 'var(--bg-glass)',
+              border: `1px solid ${saveAsModel ? 'rgba(139,92,246,0.3)' : 'var(--border-subtle)'}`,
+              borderRadius: 9, transition: 'all 0.15s',
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={saveAsModel}
+              onChange={e => setSaveAsModel(e.target.checked)}
+              style={{
+                width: 16, height: 16, cursor: 'pointer',
+                accentColor: 'var(--brand-accent)', flexShrink: 0,
+              }}
+            />
+            <BookmarkPlus size={15} style={{ color: saveAsModel ? 'var(--brand-accent)' : 'var(--text-muted)', flexShrink: 0 }} />
+            <span style={{ fontSize: '0.875rem', fontWeight: 600, color: saveAsModel ? 'var(--text-primary)' : 'var(--text-secondary)' }}>
+              💾 Sauvegarder aussi comme modèle réutilisable
+            </span>
+            {saveAsModel && (
+              <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--text-muted)' }}>
+                → POST /api/modeles
+              </span>
+            )}
+          </label>
+
+          {/* Buttons row */}
+          <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
           <button onClick={handleCancel} style={{
             padding: '10px 20px', background: 'var(--bg-glass)', color: 'var(--text-secondary)',
             border: '1px solid var(--border-subtle)', borderRadius: 10, cursor: 'pointer',
@@ -1012,5 +1105,6 @@ export const TaskCreator = () => {
 
       </div>
     </div>
+  </div>
   );
 };
