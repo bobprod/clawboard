@@ -320,6 +320,23 @@ function TabTaches({ tasks, onSelect }: { tasks: Task[]; onSelect: (id: string) 
     } catch {}
     setReplayingId(null);
   };
+
+  // Navigate to TaskCreator pre-filled with task params (Rejouer = new run from scratch)
+  const handleReplayNavigate = (task: Task) => {
+    const t = task as any;
+    navigate('/tasks/new', { state: { prefill: {
+      name:         t.name || task.title || '',
+      instructions: t.instructions ?? t.description ?? '',
+      skillName:    t.skillName ?? '',
+      llmModel:     t.llmModel  ?? (task as any).llmMode ?? '',
+      agent:        t.agent     ?? t.agentId ?? 'main',
+      canal:        t.channelTarget?.platform ?? t.canal ?? 'telegram',
+      destinataire: t.channelTarget?.targetId  ?? t.destinataire ?? '',
+      timeoutMin:   t.timeoutMin  ?? 30,
+      objectives:   t.objectives  ?? [],
+      disablePreInstructions: t.disablePreInstructions ?? false,
+    }}});
+  };
   const statuses = ['all', 'running', 'planned', 'completed', 'failed'];
 
   const filtered = tasks
@@ -503,8 +520,8 @@ function TabTaches({ tasks, onSelect }: { tasks: Task[]; onSelect: (id: string) 
                   <Dropdown
                     trigger={<div style={{ padding: '6px', borderRadius: 6, color: 'var(--text-muted)', cursor: 'pointer' }}><MoreVertical size={15} /></div>}
                     items={[
-                      { icon: Copy,      label: 'Cloner',   onClick: () => handleClone(task) },
-                      ...(task.status === 'failed' ? [{ icon: RotateCcw, label: 'Rejouer', onClick: () => handleReplay(task) }] : []),
+                      { icon: Copy,      label: '📋 Cloner',          onClick: () => handleClone(task) },
+                      ...(task.status === 'failed' ? [{ icon: RotateCcw, label: '🔁 Rejouer', onClick: () => handleReplayNavigate(task) }] : []),
                     ]}
                   />
                 </div>
@@ -767,31 +784,41 @@ function TabModeles() {
   );
 }
 
+// ─── Relative time helper ──────────────────────────────────────────────────────
+
+function timeAgo(dateStr: string | undefined): string {
+  if (!dateStr) return '';
+  const diff = Date.now() - new Date(dateStr).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 2)  return 'à l\'instant';
+  if (mins < 60) return `il y a ${mins} min`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24)  return `il y a ${hrs}h`;
+  const days = Math.floor(hrs / 24);
+  return `il y a ${days}j`;
+}
+
 // ─── Tab: Récurrences ─────────────────────────────────────────────────────────
 
 function TabRecurrences() {
   const [recurrences, setRecurrences] = useState<Recurrence[]>([]);
   const [running, setRunning] = useState<string | null>(null);
-  const [failedModeleIds, setFailedModeleIds] = useState<Set<string>>(new Set());
+  // Map modeleId → last archive entry (regardless of status)
+  const [lastExecMap, setLastExecMap] = useState<Record<string, ArchiveEntry>>({});
 
   useEffect(() => {
     apiFetch(`${BASE}/api/recurrences`).then(r => r.json()).then(d => setRecurrences(Array.isArray(d) ? d : [])).catch(() => {});
-    // Cross-ref: find modeleIds whose last archive entry was a failure
+    // Cross-ref: keep the most-recent archive entry per modeleId
     apiFetch(`${BASE}/api/archives`).then(r => r.json()).then((archives: ArchiveEntry[]) => {
-      const lastByModele: Record<string, ArchiveEntry> = {};
+      const map: Record<string, ArchiveEntry> = {};
       for (const a of archives) {
         if (!a.modeleId) continue;
-        const prev = lastByModele[a.modeleId];
+        const prev = map[a.modeleId];
         if (!prev || new Date(a.startedAt ?? a.date ?? 0) > new Date(prev.startedAt ?? prev.date ?? 0)) {
-          lastByModele[a.modeleId] = a;
+          map[a.modeleId] = a;
         }
       }
-      const failed = new Set(
-        Object.entries(lastByModele)
-          .filter(([, a]) => a.exitCode !== 0 && a.status !== 'ok' && a.status !== 'completed')
-          .map(([id]) => id)
-      );
-      setFailedModeleIds(failed);
+      setLastExecMap(map);
     }).catch(() => {});
   }, []);
 
@@ -835,18 +862,32 @@ function TabRecurrences() {
 
           {/* Name + cron */}
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
               <span style={{ fontWeight: 600, color: 'var(--text-primary)', fontSize: '0.95rem' }}>{rec.name}</span>
-              {failedModeleIds.has(rec.modeleId) && (
-                <span title="Dernière exécution en échec" style={{
-                  display: 'inline-flex', alignItems: 'center', gap: 4,
-                  fontSize: '10px', fontWeight: 700, padding: '2px 8px', borderRadius: 10,
-                  background: 'rgba(239,68,68,0.1)', color: '#ef4444',
-                  border: '1px solid rgba(239,68,68,0.25)',
-                }}>
-                  <AlertTriangle size={10} /> ÉCHEC
-                </span>
-              )}
+              {lastExecMap[rec.modeleId] && (() => {
+                const le = lastExecMap[rec.modeleId];
+                const ok = le.exitCode === 0 || le.status === 'ok' || le.status === 'completed';
+                const when = timeAgo(le.startedAt ?? le.date);
+                return ok ? (
+                  <span title={`Dernière exécution : succès ${when}`} style={{
+                    display: 'inline-flex', alignItems: 'center', gap: 4,
+                    fontSize: '10px', fontWeight: 700, padding: '2px 8px', borderRadius: 10,
+                    background: 'rgba(16,185,129,0.1)', color: '#10b981',
+                    border: '1px solid rgba(16,185,129,0.25)',
+                  }}>
+                    ✅ {when}
+                  </span>
+                ) : (
+                  <span title="Dernière exécution en échec" style={{
+                    display: 'inline-flex', alignItems: 'center', gap: 4,
+                    fontSize: '10px', fontWeight: 700, padding: '2px 8px', borderRadius: 10,
+                    background: 'rgba(239,68,68,0.1)', color: '#ef4444',
+                    border: '1px solid rgba(239,68,68,0.25)',
+                  }}>
+                    <AlertTriangle size={10} /> ⚠️ Dernière exécution échouée
+                  </span>
+                );
+              })()}
             </div>
             <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginTop: '4px', flexWrap: 'wrap' }}>
               <Tag label={rec.cronExpr} color="#a1a1aa" />
@@ -990,37 +1031,89 @@ function TabPreInstructions() {
 
 // ─── Tab: Archives ────────────────────────────────────────────────────────────
 
+// ─── Archives status options ──────────────────────────────────────────────────
+
+const ARCHIVE_STATUS_OPTIONS = [
+  { id: 'all'       as const, label: 'Tous',      color: 'var(--text-primary)', bg: 'rgba(255,255,255,0.08)' },
+  { id: 'completed' as const, label: '✓ Succès',  color: '#10b981',             bg: 'rgba(16,185,129,0.15)'  },
+  { id: 'failed'    as const, label: '✕ Échecs',  color: '#ef4444',             bg: 'rgba(239,68,68,0.15)'   },
+  { id: 'running'   as const, label: '⟳ En cours', color: '#3b82f6',             bg: 'rgba(59,130,246,0.15)'  },
+];
+
+const ARCHIVE_PERIOD_OPTIONS = [
+  { id: 'all' as const, label: 'Toutes' },
+  { id: '7d'  as const, label: '7 jours' },
+  { id: '30d' as const, label: '30 jours' },
+  { id: '90d' as const, label: '90 jours' },
+];
+
+type ArchiveStatus = 'all' | 'completed' | 'failed' | 'running';
+type ArchivePeriod = 'all' | '7d' | '30d' | '90d';
+
+const PERIOD_MS: Record<ArchivePeriod, number | null> = {
+  all: null, '7d': 7 * 86400000, '30d': 30 * 86400000, '90d': 90 * 86400000,
+};
+
 function TabArchives() {
-  const [archives, setArchives] = useState<ArchiveEntry[]>([]);
-  const [search, setSearch] = useState('');
-  const [statusFilter, setStatusFilter] = useState<'all' | 'completed' | 'failed'>('all');
+  const [archives, setArchives]       = useState<ArchiveEntry[]>([]);
+  const [search, setSearch]           = useState('');
+  const [statusFilter, setStatusFilter] = useState<ArchiveStatus>('all');
+  const [periodFilter, setPeriodFilter] = useState<ArchivePeriod>('all');
 
   useEffect(() => {
     apiFetch(`${BASE}/api/archives`)
       .then(r => r.json())
-      .then((data: ArchiveEntry[]) => setArchives(data))
+      .then((data: ArchiveEntry[]) => setArchives(Array.isArray(data) ? data : []))
       .catch(() => {});
   }, []);
 
-  const getStatus = (a: ArchiveEntry) => a.exitCode === 0 || a.status === 'ok' || a.status === 'completed' ? 'completed' : 'failed';
+  const getStatus = (a: ArchiveEntry): 'completed' | 'failed' | 'running' => {
+    if (a.status === 'running') return 'running';
+    return a.exitCode === 0 || a.status === 'ok' || a.status === 'completed' ? 'completed' : 'failed';
+  };
+
+  const cutoff = PERIOD_MS[periodFilter];
 
   const filtered = archives
     .filter(a => statusFilter === 'all' || getStatus(a) === statusFilter)
+    .filter(a => {
+      if (!cutoff) return true;
+      const d = new Date(a.startedAt ?? a.date ?? '');
+      return !isNaN(d.getTime()) && Date.now() - d.getTime() <= cutoff;
+    })
     .filter(a => {
       if (!search.trim()) return true;
       const q = search.toLowerCase();
       return [a.taskName ?? a.name ?? '', a.skillName ?? '', a.id].some(s => s.toLowerCase().includes(q));
     });
 
+  // Per-status counts (unaffected by status filter, but respect period + search)
+  const baseForCount = archives
+    .filter(a => {
+      if (!cutoff) return true;
+      const d = new Date(a.startedAt ?? a.date ?? '');
+      return !isNaN(d.getTime()) && Date.now() - d.getTime() <= cutoff;
+    })
+    .filter(a => {
+      if (!search.trim()) return true;
+      const q = search.toLowerCase();
+      return [a.taskName ?? a.name ?? '', a.skillName ?? '', a.id].some(s => s.toLowerCase().includes(q));
+    });
+
+  const counts: Record<ArchiveStatus, number> = {
+    all:       baseForCount.length,
+    completed: baseForCount.filter(a => getStatus(a) === 'completed').length,
+    failed:    baseForCount.filter(a => getStatus(a) === 'failed').length,
+    running:   baseForCount.filter(a => getStatus(a) === 'running').length,
+  };
+
   const exportCSV = () => {
-    const headers = ['ID', 'Tâche', 'Skill', 'Date', 'Durée(s)', 'Tokens', 'Coût', 'LLM', 'Statut'];
+    const headers = ['Tâche', 'Date', 'Durée (s)', 'Tokens', 'Coût', 'LLM', 'Statut'];
     const rows = filtered.map(a => [
-      a.id,
       a.taskName ?? a.name ?? '',
-      a.skillName ?? '',
       new Date(a.startedAt ?? a.date ?? '').toISOString(),
       a.duration,
-      (a.promptTokens ?? 0) + (a.completionTokens ?? a.tokens ?? 0),
+      (a.promptTokens ?? 0) + (a.completionTokens ?? (a.tokens as number | undefined) ?? 0),
       typeof a.cost === 'number' ? a.cost.toFixed(6) : a.cost,
       a.llmModel ?? '',
       getStatus(a),
@@ -1028,27 +1121,34 @@ function TabArchives() {
     const csv = [headers.join(','), ...rows].join('\n');
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url; a.download = `archives-${new Date().toISOString().slice(0,10)}.csv`; a.click();
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `archives-${new Date().toISOString().slice(0, 10)}.csv`;
+    link.click();
     URL.revokeObjectURL(url);
   };
 
+  const hasActiveFilter = statusFilter !== 'all' || periodFilter !== 'all' || search.trim() !== '';
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-      {/* Toolbar */}
-      <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-        {/* Search */}
-        <div style={{ position: 'relative', flex: 1, minWidth: 200 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+
+      {/* ── Row 1 : Search + Export ───────────────────────────────────── */}
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+        <div style={{ position: 'relative', flex: 1 }}>
           <Search size={13} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)', pointerEvents: 'none' }} />
           <input
             value={search}
             onChange={e => setSearch(e.target.value)}
-            placeholder="Rechercher par nom, skill…"
+            placeholder="Rechercher par nom de tâche, skill…"
             style={{
               width: '100%', padding: '8px 12px 8px 30px', borderRadius: 9,
               background: 'var(--bg-glass)', border: '1px solid var(--border-subtle)',
               color: 'var(--text-primary)', fontSize: '0.8rem', outline: 'none', boxSizing: 'border-box',
+              transition: 'border-color 0.2s',
             }}
+            onFocus={e => e.target.style.borderColor = 'var(--brand-accent)'}
+            onBlur={e => e.target.style.borderColor = 'var(--border-subtle)'}
           />
           {search && (
             <button onClick={() => setSearch('')} style={{ position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', display: 'flex' }}>
@@ -1056,34 +1156,71 @@ function TabArchives() {
             </button>
           )}
         </div>
-        {/* Status filter */}
-        <div style={{ display: 'flex', gap: 4, background: 'var(--bg-glass)', padding: '3px', borderRadius: 8, border: '1px solid var(--border-subtle)' }}>
-          {(['all', 'completed', 'failed'] as const).map(s => (
-            <button key={s} onClick={() => setStatusFilter(s)} style={{
-              padding: '5px 12px', borderRadius: 6, border: 'none', cursor: 'pointer',
-              background: statusFilter === s ? (s === 'completed' ? 'rgba(16,185,129,0.15)' : s === 'failed' ? 'rgba(239,68,68,0.15)' : 'rgba(255,255,255,0.08)') : 'transparent',
-              color: statusFilter === s ? (s === 'completed' ? '#10b981' : s === 'failed' ? '#ef4444' : 'var(--text-primary)') : 'var(--text-secondary)',
-              fontSize: '12px', fontWeight: 600, transition: 'all 0.15s',
-            }}>
-              {s === 'all' ? `Tous (${archives.length})` : s === 'completed' ? `✓ Succès (${archives.filter(a => getStatus(a) === 'completed').length})` : `✕ Échecs (${archives.filter(a => getStatus(a) === 'failed').length})`}
-            </button>
-          ))}
-        </div>
-        {/* Export */}
-        <button onClick={exportCSV} disabled={filtered.length === 0} style={{
-          display: 'flex', alignItems: 'center', gap: 6,
-          padding: '7px 14px', borderRadius: 8,
-          background: 'rgba(59,130,246,0.08)', border: '1px solid rgba(59,130,246,0.25)',
-          color: '#3b82f6', cursor: filtered.length === 0 ? 'not-allowed' : 'pointer',
-          fontSize: '12px', fontWeight: 600, opacity: filtered.length === 0 ? 0.5 : 1,
-        }}>
-          <Download size={13} /> Exporter CSV ({filtered.length})
+        <button
+          onClick={exportCSV}
+          disabled={filtered.length === 0}
+          title={`Exporter ${filtered.length} entrée${filtered.length !== 1 ? 's' : ''} en CSV`}
+          style={{
+            display: 'flex', alignItems: 'center', gap: 6,
+            padding: '7px 14px', borderRadius: 8, whiteSpace: 'nowrap',
+            background: 'rgba(59,130,246,0.08)', border: '1px solid rgba(59,130,246,0.25)',
+            color: '#3b82f6', cursor: filtered.length === 0 ? 'not-allowed' : 'pointer',
+            fontSize: '12px', fontWeight: 600, opacity: filtered.length === 0 ? 0.5 : 1,
+            transition: 'all 0.15s',
+          }}
+        >
+          <Download size={13} /> ⬇ Exporter CSV
         </button>
       </div>
 
-      {/* Table */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '0' }}>
-        {/* Table header */}
+      {/* ── Row 2 : Status + Période + compteur ──────────────────────── */}
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+        {/* Status pills */}
+        <div style={{ display: 'flex', gap: 3, background: 'var(--bg-glass)', padding: '3px', borderRadius: 8, border: '1px solid var(--border-subtle)' }}>
+          {ARCHIVE_STATUS_OPTIONS.map(opt => {
+            const active = statusFilter === opt.id;
+            return (
+              <button key={opt.id} onClick={() => setStatusFilter(opt.id)} style={{
+                padding: '5px 11px', borderRadius: 6, border: 'none', cursor: 'pointer',
+                background: active ? opt.bg : 'transparent',
+                color: active ? opt.color : 'var(--text-secondary)',
+                fontSize: '12px', fontWeight: 600, transition: 'all 0.15s', whiteSpace: 'nowrap',
+              }}>
+                {opt.label}{' '}
+                <span style={{ opacity: 0.7, fontSize: '10px' }}>({counts[opt.id]})</span>
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Period pills */}
+        <div style={{ display: 'flex', gap: 3, background: 'var(--bg-glass)', padding: '3px', borderRadius: 8, border: '1px solid var(--border-subtle)' }}>
+          {ARCHIVE_PERIOD_OPTIONS.map(opt => {
+            const active = periodFilter === opt.id;
+            return (
+              <button key={opt.id} onClick={() => setPeriodFilter(opt.id)} style={{
+                padding: '5px 11px', borderRadius: 6, border: 'none', cursor: 'pointer',
+                background: active ? 'rgba(139,92,246,0.15)' : 'transparent',
+                color: active ? 'var(--brand-accent)' : 'var(--text-secondary)',
+                fontSize: '12px', fontWeight: 600, transition: 'all 0.15s', whiteSpace: 'nowrap',
+              }}>
+                {opt.label}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Résultat count */}
+        {hasActiveFilter && (
+          <span style={{ fontSize: '12px', color: 'var(--text-muted)', marginLeft: 'auto' }}>
+            {filtered.length} résultat{filtered.length !== 1 ? 's' : ''} sur {archives.length}
+          </span>
+        )}
+      </div>
+
+      {/* ── Table ─────────────────────────────────────────────────────── */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+        {/* Header */}
         <div style={{
           display: 'grid', gridTemplateColumns: '2fr 1fr 80px 80px 80px 80px 120px',
           gap: '12px', padding: '10px 20px',
@@ -1102,31 +1239,46 @@ function TabArchives() {
 
         {filtered.length === 0 && (
           <div style={{ padding: '40px', textAlign: 'center', color: 'var(--text-secondary)', opacity: 0.5 }}>
-            {archives.length === 0 ? 'Aucune archive disponible' : 'Aucun résultat pour cette recherche'}
+            {archives.length === 0 ? 'Aucune archive disponible' : 'Aucun résultat pour ces filtres'}
           </div>
         )}
 
         {filtered.map((a, i) => (
-          <div key={a.id} style={{
-            display: 'grid', gridTemplateColumns: '2fr 1fr 80px 80px 80px 80px 120px',
-            gap: '12px', padding: '14px 20px', alignItems: 'center',
-            background: i % 2 === 0 ? 'rgba(255,255,255,0.01)' : 'transparent',
-            borderBottom: '1px solid rgba(255,255,255,0.04)',
-            transition: 'background 0.15s',
-          }}
-          onMouseOver={e => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.04)'; }}
-          onMouseOut={e => { (e.currentTarget as HTMLElement).style.background = i % 2 === 0 ? 'rgba(255,255,255,0.01)' : 'transparent'; }}
+          <div
+            key={a.id}
+            style={{
+              display: 'grid', gridTemplateColumns: '2fr 1fr 80px 80px 80px 80px 120px',
+              gap: '12px', padding: '14px 20px', alignItems: 'center',
+              background: i % 2 === 0 ? 'rgba(255,255,255,0.01)' : 'transparent',
+              borderBottom: '1px solid rgba(255,255,255,0.04)',
+              transition: 'background 0.15s',
+            }}
+            onMouseOver={e => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.04)'; }}
+            onMouseOut={e => { (e.currentTarget as HTMLElement).style.background = i % 2 === 0 ? 'rgba(255,255,255,0.01)' : 'transparent'; }}
           >
             <div>
-              <div style={{ fontWeight: 600, color: 'var(--text-primary)', fontSize: '0.9rem' }}>{a.taskName ?? a.name ?? a.id}</div>
-              <div style={{ fontSize: '11px', color: 'var(--text-secondary)', fontFamily: 'var(--mono)', marginTop: '2px' }}>{a.skillName ?? a.id}</div>
+              <div style={{ fontWeight: 600, color: 'var(--text-primary)', fontSize: '0.9rem' }}>
+                {a.taskName ?? a.name ?? a.id}
+              </div>
+              <div style={{ fontSize: '11px', color: 'var(--text-secondary)', fontFamily: 'var(--mono)', marginTop: '2px' }}>
+                {a.skillName ?? a.id}
+              </div>
             </div>
             <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
-              {(() => { const d = new Date(a.startedAt ?? a.date ?? ''); return isNaN(d.getTime()) ? '—' : d.toLocaleString('fr-FR', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }); })()}
+              {(() => {
+                const d = new Date(a.startedAt ?? a.date ?? '');
+                return isNaN(d.getTime()) ? '—' : d.toLocaleString('fr-FR', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+              })()}
             </div>
-            <div style={{ fontSize: '12px', fontFamily: 'var(--mono)', color: 'var(--text-primary)' }}>{a.duration}s</div>
-            <div style={{ fontSize: '12px', fontFamily: 'var(--mono)', color: 'var(--text-primary)' }}>{((a.promptTokens ?? 0) + (a.completionTokens ?? a.tokens ?? 0)).toLocaleString()}</div>
-            <div style={{ fontSize: '12px', fontFamily: 'var(--mono)', color: '#10b981' }}>${typeof a.cost === 'number' ? a.cost.toFixed(4) : a.cost}</div>
+            <div style={{ fontSize: '12px', fontFamily: 'var(--mono)', color: 'var(--text-primary)' }}>
+              {a.duration}s
+            </div>
+            <div style={{ fontSize: '12px', fontFamily: 'var(--mono)', color: 'var(--text-primary)' }}>
+              {((a.promptTokens ?? 0) + (a.completionTokens ?? (a.tokens as number | undefined) ?? 0)).toLocaleString()}
+            </div>
+            <div style={{ fontSize: '12px', fontFamily: 'var(--mono)', color: '#10b981' }}>
+              ${typeof a.cost === 'number' ? a.cost.toFixed(4) : a.cost}
+            </div>
             <Tag label={modelShortName(a.llmModel ?? '')} color="#10b981" />
             <StatusBadge status={getStatus(a)} />
           </div>
@@ -1141,6 +1293,7 @@ function TabArchives() {
 export const TachesPage = () => {
   const [activeTab, setActiveTab] = useState<TabId>('taches');
   const [tourForceRun, setTourForceRun] = useState(false);
+  const [panelCollapsed, setPanelCollapsed] = useState(false);
   const { data: liveTasks } = useSSE<Task[] | null>('/api/tasks?stream=1', null);
   const tasks: Task[] = liveTasks ?? [];
   const { taskId } = useParams<{ taskId: string }>();
@@ -1153,11 +1306,11 @@ export const TachesPage = () => {
       <TasksTour forceRun={tourForceRun} onClose={() => setTourForceRun(false)} />
       {/* ─── Left: Task list (shrinks when panel is open) ─── */}
       <div style={{
-        flex: taskId ? '0 0 35%' : '1 1 100%',
+        flex: taskId && !panelCollapsed ? '0 0 42%' : '1 1 100%',
         minWidth: 0,
         transition: 'flex 0.3s ease',
         display: 'flex', flexDirection: 'column', gap: '24px',
-        overflowY: 'auto', paddingRight: taskId ? '16px' : '0',
+        overflowY: 'auto', paddingRight: taskId && !panelCollapsed ? '16px' : '0',
       }}>
       {/* Page header */}
       <div data-tour="tasks-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
@@ -1262,11 +1415,30 @@ export const TachesPage = () => {
       {/* ─── Right: Detail panel (slides in) ─── */}
       {taskId && (
         <div style={{
-          flex: '0 0 65%',
-          overflowY: 'auto',
+          flex: panelCollapsed ? '0 0 0%' : '0 0 58%',
+          overflow: panelCollapsed ? 'hidden' : 'auto',
+          transition: 'flex 0.3s ease',
+          position: 'relative',
           animation: 'panelSlideIn 0.25s ease',
         }}>
-          <TaskDetailPanel taskId={taskId} />
+          {/* Collapse / expand toggle */}
+          <button
+            onClick={() => setPanelCollapsed(c => !c)}
+            title={panelCollapsed ? 'Agrandir le panneau' : 'Réduire le panneau'}
+            style={{
+              position: 'sticky', top: '8px', left: '-18px',
+              zIndex: 10, display: 'flex', alignItems: 'center', justifyContent: 'center',
+              width: '28px', height: '28px', borderRadius: '50%',
+              background: 'var(--bg-glass)', border: '1px solid var(--border-subtle)',
+              color: 'var(--text-secondary)', cursor: 'pointer',
+              boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
+              transition: 'all 0.2s', flexShrink: 0,
+              marginBottom: '-28px',
+            }}
+          >
+            <ChevronRight size={14} style={{ transform: panelCollapsed ? 'none' : 'rotate(180deg)', transition: 'transform 0.3s' }} />
+          </button>
+          {!panelCollapsed && <TaskDetailPanel taskId={taskId} />}
         </div>
       )}
 

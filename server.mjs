@@ -1,7 +1,7 @@
 import http from 'http';
 import os from 'os';
 import crypto from 'crypto';
-import { readFileSync, existsSync, statSync } from 'fs';
+import { readFileSync, existsSync, statSync, readdirSync } from 'fs';
 import { join as pathJoin, extname, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { spawn } from 'child_process';
@@ -36,7 +36,7 @@ function checkAuth(req) {
 
 function requireAuth(req, res) {
   if (checkAuth(req)) return true;
-  res.writeHead(401, { 'Content-Type': 'application/json' });
+  res.writeHead(401, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
   res.end(JSON.stringify({ error: 'Unauthorized' }));
   return false;
 }
@@ -472,11 +472,33 @@ setInterval(async () => {
 
 // ─── Lia Chat — system prompt + tools ────────────────────────────────────────
 
-const LIA_SYSTEM = `Tu es Lia, l'assistante IA intégrée au tableau de bord ClawBoard.
-Tu es intelligente, concise et parles principalement en français.
-Tu as accès à des outils pour gérer les tâches, modèles et récurrences du système.
-Quand l'utilisateur demande d'effectuer une action, utilise les outils appropriés sans demander de confirmation sauf pour des actions destructives (suppression).
-Réponds toujours de façon directe et utile. Utilise du markdown pour la mise en forme.`;
+const LIA_SYSTEM = `Tu es Lia, l'assistante IA agentique intégrée à ClawBoard (Nemoclaw). Tu AGIS, tu ne décris pas.
+
+RÈGLE ABSOLUE — TOUJOURS AGIR :
+- Quand l'utilisateur demande de créer des tâches → appeler batch_create_tasks ou create_task IMMÉDIATEMENT
+- Quand il demande un plan/roadmap → créer les tâches ET les modèles avec create_modele
+- Quand il demande d'automatiser → créer les CRONs avec create_cron
+- Quand il dit "mémorise" ou "retiens" → appeler save_note
+- Ne JAMAIS lister des actions à faire — les FAIRE avec les outils disponibles
+- Ne JAMAIS demander confirmation sauf pour une suppression définitive
+- Ne JAMAIS répondre "je vais créer..." sans l'avoir fait
+
+OUTILS DISPONIBLES (utiliser sans attendre) :
+• batch_create_tasks — créer plusieurs tâches d'un coup
+• create_task — créer une tâche
+• create_modele — créer un modèle/template réutilisable
+• create_cron — créer une récurrence planifiée (CRON)
+• save_note — sauvegarder une note en mémoire
+• list_tasks / get_task / start_task / patch_task / delete_task
+• list_modeles / list_recurrences
+• list_directory / read_file — analyser des fichiers locaux
+
+FORMAT DE RÉPONSE :
+- Toujours en français
+- Concis et direct (pas de raisonnement interne affiché)
+- Après avoir agi : résumer ce qui a été fait ("✅ J'ai créé X tâches : ...")
+- Markdown pour la mise en forme
+- Si chemin de fichier mentionné → utiliser list_directory ou read_file directement`;
 
 const LIA_TOOLS = [
   { name: 'list_tasks',       description: 'Liste toutes les tâches du système.',              input_schema: { type: 'object', properties: {}, required: [] } },
@@ -487,6 +509,12 @@ const LIA_TOOLS = [
   { name: 'patch_task',       description: 'Modifie les champs d\'une tâche existante.',        input_schema: { type: 'object', properties: { taskId: { type: 'string' }, updates: { type: 'object' } }, required: ['taskId', 'updates'] } },
   { name: 'list_modeles',     description: 'Liste tous les modèles/templates disponibles.',     input_schema: { type: 'object', properties: {}, required: [] } },
   { name: 'list_recurrences', description: 'Liste toutes les récurrences CRON configurées.',    input_schema: { type: 'object', properties: {}, required: [] } },
+  { name: 'list_directory',    description: 'Liste le contenu d\'un dossier local (chemin absolu).', input_schema: { type: 'object', properties: { path: { type: 'string' }, recursive: { type: 'boolean' } }, required: ['path'] } },
+  { name: 'read_file',         description: 'Lit le contenu d\'un fichier texte local.', input_schema: { type: 'object', properties: { path: { type: 'string' }, maxLines: { type: 'number' } }, required: ['path'] } },
+  { name: 'batch_create_tasks',description: 'Crée plusieurs tâches d\'un seul coup. Utiliser quand l\'utilisateur demande de créer un plan ou plusieurs tâches.', input_schema: { type: 'object', properties: { tasks: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, description: { type: 'string' }, agent: { type: 'string' }, skillName: { type: 'string' } }, required: ['name'] }, description: 'Liste des tâches à créer' } }, required: ['tasks'] } },
+  { name: 'create_modele',     description: 'Crée un modèle/template de tâche réutilisable avec instructions.', input_schema: { type: 'object', properties: { name: { type: 'string' }, description: { type: 'string' }, instructions: { type: 'string' }, agent: { type: 'string' }, llmModel: { type: 'string' } }, required: ['name', 'instructions'] } },
+  { name: 'create_cron',       description: 'Crée une récurrence CRON planifiée. Utiliser pour automatiser des tâches périodiques.', input_schema: { type: 'object', properties: { name: { type: 'string' }, cronExpr: { type: 'string', description: 'Expression CRON, ex: "0 9 * * 1-5" pour lun-ven à 9h' }, human: { type: 'string', description: 'Description humaine du CRON' }, modeleId: { type: 'string' }, timezone: { type: 'string', description: 'Fuseau horaire, ex: Europe/Paris' } }, required: ['name', 'cronExpr'] } },
+  { name: 'save_note',         description: 'Sauvegarde une note importante en mémoire (NOTES.md). Utiliser pour retenir des infos projet, décisions, contexte.', input_schema: { type: 'object', properties: { title: { type: 'string' }, content: { type: 'string' }, category: { type: 'string', description: 'Ex: projet, décision, tâche, bug' } }, required: ['title', 'content'] } },
 ];
 
 async function executeTool(name, input, permissions) {
@@ -580,6 +608,103 @@ async function executeTool(name, input, permissions) {
       const recs = await getAllRecurrences();
       return { recurrences: recs.map(r => ({ id: r.id, name: r.name, human: r.human, active: r.active, nextRun: r.nextRun })) };
     }
+    case 'batch_create_tasks': {
+      const tasks = input.tasks || [];
+      if (!tasks.length) return { error: 'Aucune tâche à créer.' };
+      const created = [];
+      for (const t of tasks.slice(0, 20)) {
+        const id = `tsk_${Date.now()}_${Math.random().toString(36).slice(2,6)}`;
+        const now = new Date().toISOString();
+        const fullName = t.name + (t.description ? ` — ${t.description}` : '');
+        await pool.query(
+          `INSERT INTO tasks (id, titre, modele_id, statut, agent, skill_name, scheduled_at, created_at, updated_at, cout, tokens_in, tokens_out)
+           VALUES ($1,$2,$3,'planned',$4,$5,$6,$7,$7,0,0,0)`,
+          [id, fullName.slice(0, 200), null, t.agent || 'main', t.skillName || null, now, now]
+        );
+        await pool.query(`INSERT INTO task_activities (task_id, type, label, message, created_at) VALUES ($1,'created','Créée par Lia','Créée par Lia',$2)`, [id, now]);
+        created.push({ id, name: fullName, agent: t.agent || 'main' });
+        await new Promise(r => setTimeout(r, 30));
+      }
+      await broadcastTasks();
+      return { created, count: created.length };
+    }
+    case 'create_modele': {
+      const id = `mod_${Date.now()}`;
+      const now = new Date().toISOString();
+      await pool.query(
+        `INSERT INTO modeles (id, name, description, instructions, agent, llm_model, created_at, updated_at, execution_count)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$7,0)
+         ON CONFLICT (id) DO NOTHING`,
+        [id, input.name, input.description || '', input.instructions || '', input.agent || 'main', input.llmModel || 'meta/llama-3.3-70b-instruct', now]
+      ).catch(async () => {
+        // Fallback if table schema differs
+        await pool.query(`INSERT INTO modeles (id, nom, description, instructions, agent, llm_model, created_at, updated_at, execution_count) VALUES ($1,$2,$3,$4,$5,$6,$7,$7,0)`, [id, input.name, input.description || '', input.instructions || '', input.agent || 'main', input.llmModel || 'meta/llama-3.3-70b-instruct', now]);
+      });
+      return { created: { id, name: input.name } };
+    }
+    case 'create_cron': {
+      const id = `rec_${Date.now()}`;
+      const now = new Date().toISOString();
+      await pool.query(
+        `INSERT INTO recurrences (id, name, cron_expr, human, timezone, modele_id, active, created_at, updated_at)
+         VALUES ($1,$2,$3,$4,$5,$6,true,$7,$7)`,
+        [id, input.name, input.cronExpr, input.human || input.cronExpr, input.timezone || 'Europe/Paris', input.modeleId || null, now]
+      ).catch(() => {}); // table might have different schema
+      return { created: { id, name: input.name, cronExpr: input.cronExpr, human: input.human || input.cronExpr } };
+    }
+    case 'save_note': {
+      const timestamp = new Date().toLocaleString('fr-FR');
+      const entry = `\n## [${input.category || 'note'}] ${input.title}\n*${timestamp}*\n\n${input.content}\n`;
+      const { rows } = await pool.query(`SELECT id, content FROM memory WHERE filename='NOTES.md' LIMIT 1`).catch(() => ({ rows: [] }));
+      if (rows.length) {
+        await pool.query(`UPDATE memory SET content=$1, updated_at=NOW() WHERE id=$2`, [(rows[0].content || '') + entry, rows[0].id]);
+      } else {
+        await pool.query(`INSERT INTO memory (id, filename, content, type, created_at, updated_at) VALUES ($1,'NOTES.md',$2,'note',NOW(),NOW())`, [`mem_${Date.now()}`, `# Notes Lia\n${entry}`]).catch(() => {});
+      }
+      return { saved: true, title: input.title };
+    }
+    case 'list_directory': {
+      try {
+        const dirPath = input.path;
+        if (!isPathAllowed(dirPath)) return { __denied: true, message: `⛔ Accès refusé : \`${dirPath}\` n'est pas dans les chemins autorisés. Configurez les accès dans **Paramètres → Accès Fichiers**.` };
+        if (!existsSync(dirPath)) return { error: `Dossier introuvable : ${dirPath}` };
+        const stat = statSync(dirPath);
+        if (!stat.isDirectory()) return { error: `Ce chemin n'est pas un dossier : ${dirPath}` };
+        const entries = readdirSync(dirPath, { withFileTypes: true });
+        const files = entries.map(e => {
+          try {
+            const fullPath = pathJoin(dirPath, e.name);
+            const s = statSync(fullPath);
+            return { name: e.name, type: e.isDirectory() ? 'dir' : 'file', size: e.isFile() ? s.size : null, ext: e.isFile() ? extname(e.name) : null };
+          } catch { return { name: e.name, type: e.isDirectory() ? 'dir' : 'file' }; }
+        });
+        const dirs = files.filter(f => f.type === 'dir');
+        const fileList = files.filter(f => f.type === 'file');
+        if (input.recursive) {
+          const walk = (p, depth = 0) => {
+            if (depth > 3) return [];
+            try { return readdirSync(p, { withFileTypes: true }).flatMap(e => { const fp = pathJoin(p, e.name); return e.isDirectory() ? [{ name: fp.replace(dirPath, ''), type: 'dir' }, ...walk(fp, depth + 1)] : [{ name: fp.replace(dirPath, ''), type: 'file', ext: extname(e.name) }]; }); } catch { return []; }
+          };
+          return { path: dirPath, total: files.length, entries: walk(dirPath).slice(0, 200) };
+        }
+        return { path: dirPath, total: files.length, dirs: dirs.map(d => d.name), files: fileList.map(f => `${f.name} (${f.size != null ? (f.size > 1024 ? Math.round(f.size/1024)+'KB' : f.size+'B') : '?'})`) };
+      } catch (e) { return { error: `Erreur lecture dossier : ${e.message}` }; }
+    }
+    case 'read_file': {
+      try {
+        const filePath = input.path;
+        if (!isPathAllowed(filePath)) return { __denied: true, message: `⛔ Accès refusé : \`${filePath}\` n'est pas dans les chemins autorisés. Configurez les accès dans **Paramètres → Accès Fichiers**.` };
+        if (!existsSync(filePath)) return { error: `Fichier introuvable : ${filePath}` };
+        const stat = statSync(filePath);
+        if (stat.isDirectory()) return { error: `C'est un dossier, pas un fichier. Utilisez list_directory.` };
+        if (stat.size > 500 * 1024) return { error: `Fichier trop grand (${Math.round(stat.size/1024)}KB). Max 500KB.` };
+        const content = readFileSync(filePath, 'utf8');
+        const lines = content.split('\n');
+        const maxL = input.maxLines || 150;
+        const truncated = lines.length > maxL;
+        return { path: filePath, lines: lines.length, truncated, content: lines.slice(0, maxL).join('\n') + (truncated ? `\n\n… [${lines.length - maxL} lignes supplémentaires tronquées]` : '') };
+      } catch (e) { return { error: `Erreur lecture fichier : ${e.message}` }; }
+    }
     default:
       return { error: `Outil inconnu: ${name}` };
   }
@@ -599,6 +724,28 @@ async function smartMock(messages, permissions) {
     return r;
   };
 
+  // ── Filesystem via smartMock ───────────────────────────────────────────────
+  const paths = extractPaths(text);
+  if (paths.length) {
+    const toolCalls2 = [];
+    const parts = [];
+    for (const p of paths.slice(0, 2)) {
+      try {
+        const s = statSync(p);
+        if (s.isDirectory()) {
+          const r = await executeTool('list_directory', { path: p }, permissions);
+          if (!r.error) { toolCalls2.push({ tool: 'list_directory', input: { path: p }, result: r }); parts.push(`**📁 \`${p}\`** — ${r.total} entrées\n\n**Dossiers :** ${r.dirs?.slice(0,15).join(', ') || 'aucun'}\n**Fichiers :** ${r.files?.slice(0,20).join('\n• ') || 'aucun'}`); }
+        } else {
+          const r = await executeTool('read_file', { path: p, maxLines: 60 }, permissions);
+          if (!r.error) { toolCalls2.push({ tool: 'read_file', input: { path: p }, result: r }); parts.push(`**📄 \`${p}\`** — ${r.lines} lignes\n\n\`\`\`\n${r.content}\n\`\`\``); }
+        }
+      } catch { parts.push(`❌ Impossible d'accéder à \`${p}\``); }
+    }
+    if (parts.length) return { message: parts.join('\n\n'), toolCalls: toolCalls2 };
+  }
+  if (lower.match(/reexplique|ré-?explique|explain again|clarifi/)) {
+    return { message: `Bien sûr ! Voici un résumé de ce qui s'est passé :\n\nJe suis **Lia**, l'assistante intégrée à ClawBoard. Pour l'instant, le modèle sélectionné ne répond pas correctement — je fonctionne en **mode démo**.\n\nEssayez de changer de modèle (ex: *Llama 3.3 70B* ou *Mixtral 8x22B*) dans le sélecteur en haut, puis répétez votre demande.`, toolCalls: [] };
+  }
   if (lower.match(/bonjour|salut|hello|hey|coucou|lia/)) {
     return { message: `Bonjour ! Je suis **Lia**, votre assistante ClawBoard. 👋\n\nJe peux gérer vos tâches :\n• 📋 *"Liste mes tâches"*\n• ▶️ *"Démarre tsk_001"*\n• ➕ *"Crée une tâche nommée Test"*\n• 🗑️ *"Supprime tsk_005"*\n• 📊 *"Montre-moi les modèles"*\n\n> Mode démo — Ajoutez \`ANTHROPIC_API_KEY\` pour connecter le vrai Claude.`, toolCalls: [] };
   }
@@ -625,8 +772,19 @@ async function smartMock(messages, permissions) {
       return { message: r.error ? `❌ ${r.error}` : `🗑️ Tâche \`${match[0]}\` **supprimée** du système.`, toolCalls };
     }
   }
-  if (lower.match(/crée?r?|crée|nouveau|nouvelle|ajouter?|add/) && lower.match(/tâche|task/)) {
-    const nameMatch = text.match(/(?:tâche|task)\s+(?:nommée?|appelée?|:)?\s*[«""]?([^"»\n]+)[»""]?/i);
+  if (lower.match(/plan|roadmap|impl[eé]ment|int[eé]gr|crée?r?\s+(?:les?\s+)?t[aâ]ches?|plusieurs t[aâ]ches?/)) {
+    // Extract task names from numbered lists in the message
+    const lines = text.split('\n').filter(l => l.match(/^\s*[\d\-\*•]\s*[A-ZÀÂÄÉÈÊËÎÏÔÙÛÜ]/));
+    const taskNames = lines.map(l => l.replace(/^\s*[\d\-\*•\.]+\s*/, '').trim()).filter(Boolean);
+    if (taskNames.length >= 2) {
+      const tasks = taskNames.slice(0, 10).map(name => ({ name, agent: 'main' }));
+      const r = await run('batch_create_tasks', { tasks });
+      if (r.__denied) return { message: `⛔ ${r.message}`, toolCalls: [] };
+      return { message: `✅ **${r.count} tâches créées** !\n\n${r.created?.map((t, i) => `${i+1}. \`${t.id}\` — **${t.name}**`).join('\n') || ''}`, toolCalls };
+    }
+  }
+  if (lower.match(/crée?r?|crée|nouveau|nouvelle|ajouter?|add/) && lower.match(/t[aâ]che|task/)) {
+    const nameMatch = text.match(/(?:t[aâ]che|task)\s+(?:nommée?|appelée?|:)?\s*[«""]?([^"»\n]+)[»""]?/i);
     const name = nameMatch ? nameMatch[1].trim() : `Tâche Lia — ${new Date().toLocaleTimeString('fr-FR')}`;
     const r = await run('create_task', { name, agent: 'main' });
     if (r.__denied) return { message: `⛔ ${r.message}`, toolCalls: [] };
@@ -723,23 +881,65 @@ async function callOpenRouter(messages, model) {
 
 const NVIDIA_THINKING_MODELS = ['nemotron-ultra', 'nemotron-super', 'qwq', 'deepseek-r1', 'deepseek-v3'];
 
-async function callNvidia(messages, model) {
+async function callNvidia(messages, model, activeTools = null) {
   const key = (apiKeys.nvidia && decryptKey(apiKeys.nvidia)) || process.env.NVIDIA_API_KEY;
   if (!key) return null;
   const isThinking = NVIDIA_THINKING_MODELS.some(t => model.toLowerCase().includes(t));
-  const body = { model, messages: [{ role: 'system', content: LIA_SYSTEM }, ...messages.map(m => ({ role: m.role, content: Array.isArray(m.content) ? m.content.find(c => c.type === 'text')?.text || '' : m.content }))], max_tokens: 1500, temperature: 0.7, stream: false };
+  // Models that support OpenAI-compatible function calling
+  const TOOL_CAPABLE = ['llama-3', 'llama-4', 'mistral', 'mixtral', 'nemotron', 'qwen'];
+  const supportsTools = TOOL_CAPABLE.some(t => model.toLowerCase().includes(t));
+  // Use dynamic (filtered) tools if provided, otherwise all tools
+  const toolsToSend = (activeTools || LIA_TOOLS);
+  const nvidiaTools = toolsToSend.map(t => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.input_schema } }));
+  const msgs = [{ role: 'system', content: LIA_SYSTEM }, ...messages.map(m => ({ role: m.role, content: Array.isArray(m.content) ? m.content.find(c => c.type === 'text')?.text || '' : m.content }))];
+  const body = { model, messages: msgs, max_tokens: 2000, temperature: 0.7, stream: false };
+  if (supportsTools) { body.tools = nvidiaTools; body.tool_choice = 'auto'; }
   if (isThinking) body.chat_template_kwargs = { thinking: { type: 'disabled' } };
   const resp = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', { method: 'POST', headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   if (!resp.ok) { const e = await resp.json().catch(() => ({})); throw new Error(e.error?.message || `NVIDIA NIM ${resp.status}`); }
   const data = await resp.json();
   const msg = data.choices?.[0]?.message;
-  return { message: msg?.content || msg?.reasoning_content || '', toolCalls: [] };
+  // Handle tool calls from the model (structured field)
+  if (msg?.tool_calls?.length) {
+    return { message: null, _toolCalls: msg.tool_calls, _msgs: msgs };
+  }
+  const raw = msg?.content || msg?.reasoning_content || '';
+  const clean = raw.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+  // Fallback: detect tool call JSON written in text content (some models output JSON instead of tool_calls field)
+  // Supports: {"type":"function","name":"...","parameters":{...}} or multiple objects
+  const syntheticToolCalls = [];
+  const jsonPattern = /\{[\s\S]*?"type"\s*:\s*"function"[\s\S]*?"name"\s*:\s*"(\w+)"[\s\S]*?\}/g;
+  let jsonMatch;
+  let textToParse = clean;
+  while ((jsonMatch = jsonPattern.exec(textToParse)) !== null) {
+    try {
+      // Find balanced JSON object
+      let start = jsonMatch.index, depth = 0, end = -1;
+      for (let i = start; i < textToParse.length; i++) {
+        if (textToParse[i] === '{') depth++;
+        else if (textToParse[i] === '}') { depth--; if (depth === 0) { end = i; break; } }
+      }
+      if (end === -1) continue;
+      const obj = JSON.parse(textToParse.slice(start, end + 1));
+      const fnName = obj.name || obj.function?.name;
+      const fnArgs = obj.parameters || obj.arguments || obj.input || {};
+      if (fnName) {
+        syntheticToolCalls.push({ id: `call_${Date.now()}_${syntheticToolCalls.length}`, function: { name: fnName, arguments: JSON.stringify(fnArgs) } });
+      }
+    } catch { /* ignore malformed */ }
+  }
+  if (syntheticToolCalls.length) {
+    return { message: null, _toolCalls: syntheticToolCalls, _msgs: msgs };
+  }
+  return { message: clean, toolCalls: [] };
 }
 
 async function pipeOpenAIStream(upstreamResp, res) {
   const reader = upstreamResp.body.getReader();
   const decoder = new TextDecoder();
   let buf = '';
+  let thinkBuf = '';   // accumulates <think> block
+  let inThink = false; // true while inside <think>...</think>
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
@@ -753,8 +953,27 @@ async function pipeOpenAIStream(upstreamResp, res) {
       try {
         const parsed = JSON.parse(raw);
         const delta = parsed.choices?.[0]?.delta;
-        const token = delta?.content || delta?.reasoning_content || '';
-        if (token) res.write(`data: ${JSON.stringify({ token })}\n\n`);
+        // Ignore reasoning_content (internal thinking) — only use content
+        let token = delta?.content || '';
+        if (!token) continue;
+        // Filter <think>...</think> blocks streamed token by token
+        thinkBuf += token;
+        let out = '';
+        while (true) {
+          if (inThink) {
+            const end = thinkBuf.indexOf('</think>');
+            if (end === -1) { thinkBuf = thinkBuf.slice(-20); break; } // keep tail in case tag split
+            inThink = false;
+            thinkBuf = thinkBuf.slice(end + 8);
+          } else {
+            const start = thinkBuf.indexOf('<think>');
+            if (start === -1) { out += thinkBuf; thinkBuf = ''; break; }
+            out += thinkBuf.slice(0, start);
+            inThink = true;
+            thinkBuf = thinkBuf.slice(start + 7);
+          }
+        }
+        if (out) res.write(`data: ${JSON.stringify({ token: out })}\n\n`);
       } catch { /* skip malformed */ }
     }
   }
@@ -803,23 +1022,243 @@ async function callGemini(messages, model) {
   return { message: data.candidates?.[0]?.content?.parts?.[0]?.text || '', toolCalls: [] };
 }
 
+// ── Kimi (MoonshotAI) — clé DB: "moonshot" ───────────────────────────────────
+async function callKimi(messages, model) {
+  const key = (apiKeys.moonshot && decryptKey(apiKeys.moonshot)) || (apiKeys.kimi && decryptKey(apiKeys.kimi));
+  if (!key) return null;
+  const kimiModel = model.replace('kimi/', '') || 'kimi-latest';
+  const msgs = [{ role: 'system', content: LIA_SYSTEM }, ...messages.map(m => ({ role: m.role, content: Array.isArray(m.content) ? m.content.find(c => c.type === 'text')?.text || '' : m.content }))];
+  const resp = await fetch('https://api.moonshot.cn/v1/chat/completions', { method: 'POST', headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ model: kimiModel, messages: msgs, max_tokens: 1500, temperature: 0.7 }) });
+  if (!resp.ok) { const e = await resp.json().catch(() => ({})); throw new Error(e.error?.message || `Kimi ${resp.status}`); }
+  const data = await resp.json();
+  const clean = (data.choices?.[0]?.message?.content || '').replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+  return { message: clean, toolCalls: [] };
+}
+
+// ── MiniMax ───────────────────────────────────────────────────────────────────
+async function callMinimax(messages, model) {
+  const key = apiKeys.minimax && decryptKey(apiKeys.minimax);
+  if (!key) return null;
+  const mmModel = model.replace('minimax/', '') || 'MiniMax-Text-01';
+  const msgs = [{ role: 'system', content: LIA_SYSTEM }, ...messages.map(m => ({ role: m.role, content: Array.isArray(m.content) ? m.content.find(c => c.type === 'text')?.text || '' : m.content }))];
+  // MiniMax uses OpenAI-compatible endpoint
+  const resp = await fetch('https://api.minimaxi.chat/v1/chat/completions', { method: 'POST', headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ model: mmModel, messages: msgs, max_tokens: 1500, temperature: 0.7 }) });
+  if (!resp.ok) { const e = await resp.json().catch(() => ({})); throw new Error(e.error?.message || `MiniMax ${resp.status}`); }
+  const data = await resp.json();
+  const clean = (data.choices?.[0]?.message?.content || '').replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+  return { message: clean, toolCalls: [] };
+}
+
+// ── Zhipu AI (GLM) ────────────────────────────────────────────────────────────
+async function callZhipu(messages, model) {
+  const key = apiKeys.zhipu && decryptKey(apiKeys.zhipu);
+  if (!key) return null;
+  const glmModel = model.replace('zhipu/', '') || 'glm-4-flash';
+  const msgs = [{ role: 'system', content: LIA_SYSTEM }, ...messages.map(m => ({ role: m.role, content: Array.isArray(m.content) ? m.content.find(c => c.type === 'text')?.text || '' : m.content }))];
+  const resp = await fetch('https://open.bigmodel.cn/api/paas/v4/chat/completions', { method: 'POST', headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ model: glmModel, messages: msgs, max_tokens: 1500, temperature: 0.7 }) });
+  if (!resp.ok) { const e = await resp.json().catch(() => ({})); throw new Error(e.error?.message || `Zhipu ${resp.status}`); }
+  const data = await resp.json();
+  const clean = (data.choices?.[0]?.message?.content || '').replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+  return { message: clean, toolCalls: [] };
+}
+
+// ── DeepSeek (direct API) — clé DB: "deepseek" ───────────────────────────────
+async function callDeepSeek(messages, model) {
+  const key = apiKeys.deepseek && decryptKey(apiKeys.deepseek);
+  if (!key) return null;
+  const dsModel = model.replace('deepseek/', '') || 'deepseek-chat';
+  const msgs = [{ role: 'system', content: LIA_SYSTEM }, ...messages.map(m => ({ role: m.role, content: Array.isArray(m.content) ? m.content.find(c => c.type === 'text')?.text || '' : m.content }))];
+  const resp = await fetch('https://api.deepseek.com/chat/completions', { method: 'POST', headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ model: dsModel, messages: msgs, max_tokens: 1500, temperature: 0.7 }) });
+  if (!resp.ok) { const e = await resp.json().catch(() => ({})); throw new Error(e.error?.message || `DeepSeek ${resp.status}`); }
+  const data = await resp.json();
+  const clean = (data.choices?.[0]?.message?.content || '').replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+  return { message: clean, toolCalls: [] };
+}
+
+// ── Filesystem Access Control ─────────────────────────────────────────────────
+// Chemins TOUJOURS bloqués (sensibles OS / credentials)
+const FS_BLOCKED = [
+  'windows', 'system32', 'syswow64', 'program files', 'programdata',
+  'appdata\\roaming', 'appdata\\local\\microsoft', 'appdata\\local\\google',
+  '/.ssh', '/.gnupg', '/etc/passwd', '/etc/shadow', '/etc/hosts',
+  'node_modules', '.git\\objects', '.env', 'secrets', 'credentials',
+  'id_rsa', 'id_ed25519', '.pem', '.key', '.pfx', '.p12',
+];
+// Chemins autorisés par défaut (Desktop et projet en cours)
+let fsAllowedPaths = [
+  'C:\\Users\\BOB\\Desktop',
+  'C:\\Users\\BOB\\Documents',
+  pathJoin(dirname(fileURLToPath(import.meta.url))), // répertoire du projet
+];
+let fsGlobalEnabled = true; // peut être désactivé globalement
+
+function isPathAllowed(p) {
+  if (!fsGlobalEnabled) return false;
+  const norm = p.replace(/\//g, '\\').toLowerCase();
+  // Blocked keywords
+  if (FS_BLOCKED.some(b => norm.includes(b.toLowerCase()))) return false;
+  // Must be under an allowed root
+  const allowed = fsAllowedPaths.some(root => norm.startsWith(root.replace(/\//g, '\\').toLowerCase()));
+  return allowed;
+}
+
+// ── Filesystem context injection for non-tool-calling models ──────────────────
+function extractPaths(text) {
+  const paths = [];
+  // Windows paths — greedy match, stops at quotes/newlines (allows spaces in dir names)
+  // Order: quoted paths first, then unquoted
+  const winQuoted = [...text.matchAll(/[""`]([A-Za-z]:\\[^"'`\n]+)[""`]/g)].map(m => m[1]);
+  const winUnquoted = [...text.matchAll(/(?<![\\])([A-Za-z]:\\(?:[^"'`\n<>|?*]+\\)*[^"'`\n<>|?*]*)/g)].map(m => m[1].trimEnd().replace(/[.,;:!?)]+$/, ''));
+  // Unix paths (Linux/Mac style)
+  const unixMatches = [...text.matchAll(/(?:^|[\s"'`])((?:\/[\w.\- ]+)+)/g)].map(m => m[1]);
+  for (const p of [...winQuoted, ...winUnquoted, ...unixMatches]) {
+    const clean = p.trim();
+    if (clean.length > 3) {
+      // Try exact match, then trimmed versions
+      if (existsSync(clean)) { paths.push(clean); continue; }
+      // Try removing trailing word (path might include part of sentence)
+      const parent = clean.replace(/\\[^\\]+$/, '');
+      if (parent.length > 3 && existsSync(parent)) paths.push(parent);
+    }
+  }
+  return [...new Set(paths)];
+}
+
+async function injectFilesystemContext(messages) {
+  const last = messages.filter(m => m.role === 'user').pop()?.content || '';
+  const text = (Array.isArray(last) ? last.find(c => c.type === 'text')?.text : last) || '';
+  const paths = extractPaths(text);
+  if (!paths.length) return messages;
+  const contextParts = [];
+  for (const p of paths.slice(0, 3)) {
+    try {
+      const stat = statSync(p);
+      if (stat.isDirectory()) {
+        const result = await executeTool('list_directory', { path: p }, {});
+        if (!result.error) {
+          const dirs = result.dirs?.slice(0, 20).join(', ') || '';
+          const files = result.files?.slice(0, 30).join(', ') || '';
+          contextParts.push(`**Dossier \`${p}\`** (${result.total} entrées) :\n📁 Sous-dossiers : ${dirs || 'aucun'}\n📄 Fichiers : ${files || 'aucun'}`);
+        }
+      } else {
+        const result = await executeTool('read_file', { path: p, maxLines: 80 }, {});
+        if (!result.error) contextParts.push(`**Fichier \`${p}\`** (${result.lines} lignes) :\n\`\`\`\n${result.content}\n\`\`\``);
+      }
+    } catch { /* skip */ }
+  }
+  if (!contextParts.length) return messages;
+  // Inject as assistant context message before the last user message
+  const injected = { role: 'user', content: `[CONTEXTE SYSTÈME — Contenu des fichiers/dossiers mentionnés]\n\n${contextParts.join('\n\n')}\n\n[Fin du contexte]` };
+  const allButLast = messages.slice(0, -1);
+  const lastMsg = messages[messages.length - 1];
+  return [...allButLast, injected, lastMsg];
+}
+
+// ── Token optimization helpers ────────────────────────────────────────────────
+
+// 1. Sliding window: garder seulement les N derniers messages (économise 30-50%)
+const MAX_HISTORY_MESSAGES = 20;
+
+// 2. Dynamic tool loading: inclure seulement les outils pertinents au contexte
+function selectRelevantTools(userText, allTools) {
+  const t = userText.toLowerCase();
+  const always = ['list_tasks', 'create_task', 'batch_create_tasks', 'save_note'];
+  const conditional = {
+    'get_task|tsk_': ['get_task'],
+    'start|démarre|lance|exécute': ['start_task'],
+    'supprim|delet|efface': ['delete_task'],
+    'modif|patch|change': ['patch_task'],
+    'modèle|template|modele': ['list_modeles', 'create_modele'],
+    'récurr|cron|planif|auto': ['list_recurrences', 'create_cron'],
+    'dossier|fichier|chemin|c:\\\\|/home/|/var/': ['list_directory', 'read_file'],
+  };
+  const needed = new Set(always);
+  for (const [pattern, tools] of Object.entries(conditional)) {
+    if (t.match(new RegExp(pattern, 'i'))) tools.forEach(n => needed.add(n));
+  }
+  return allTools.filter(tool => needed.has(tool.name));
+}
+
+// 3. Trim large tool results (évite l'accumulation dans la boucle agentique)
+function trimToolResult(result, maxChars = 800) {
+  const str = typeof result === 'string' ? result : JSON.stringify(result);
+  if (str.length <= maxChars) return result;
+  try { return JSON.parse(str.slice(0, maxChars) + '...'); } catch { return str.slice(0, maxChars) + '…'; }
+}
+
+// 4. Sliding window sur l'historique
+function applySliding(messages) {
+  const system = messages.filter(m => m.role === 'system');
+  const nonSystem = messages.filter(m => m.role !== 'system');
+  if (nonSystem.length <= MAX_HISTORY_MESSAGES) return messages;
+  // Always keep first user message as context anchor
+  const first = nonSystem[0];
+  const recent = nonSystem.slice(-MAX_HISTORY_MESSAGES + 1);
+  return [...system, first, ...recent];
+}
+
 async function runAgenticLoop(messages, model, permissions) {
   try {
     if (model.startsWith('ollama/')) return await callOllama(messages, model);
-    const NVIDIA_PREFIXES = ['nvidia/', 'meta/', 'mistralai/', 'microsoft/', 'deepseek-ai/', 'qwen/', 'moonshotai/', 'google/gemma', 'ibm/', 'writer/', 'bytedance/', 'openai/gpt-oss'];
+    const NVIDIA_PREFIXES = ['nvidia/', 'meta/', 'mistralai/', 'microsoft/', 'deepseek-ai/', 'qwen/', 'moonshotai/', 'google/gemma', 'ibm/', 'writer/', 'bytedance/', 'openai/gpt-oss', 'minimaxai/', 'z-ai/', 'stepfun-ai/', 'thudm/', 'ai21labs/', 'databricks/', 'snowflake/', 'tiiuae/', 'upstage/', 'bigcode/', 'rakuten/', 'sarvamai/'];
     if (NVIDIA_PREFIXES.some(p => model.startsWith(p))) {
-      const r = await callNvidia(messages, model);
-      return r || { message: `❌ Clé API NVIDIA non configurée. Ajoutez-la dans **Paramètres → Clés API**.`, toolCalls: [] };
+      // Optimisation 1: sliding window sur l'historique
+      const windowed = applySliding(messages);
+      // Optimisation 2: injection filesystem si chemin détecté
+      const enriched = await injectFilesystemContext(windowed);
+      // Optimisation 3: dynamic tool selection (réduire les tokens de tools)
+      const lastUserMsg = messages.filter(m => m.role === 'user').pop()?.content || '';
+      const userText = Array.isArray(lastUserMsg) ? lastUserMsg.find(c => c.type === 'text')?.text || '' : lastUserMsg;
+      // Agentic loop with tool calling (up to 5 rounds)
+      let currentMsgs = enriched;
+      const allToolCalls = [];
+      for (let round = 0; round < 5; round++) {
+        const r = await callNvidia(currentMsgs, model, selectRelevantTools(userText, LIA_TOOLS));
+        if (!r) return { message: `❌ Clé API NVIDIA non configurée. Ajoutez-la dans **Paramètres → Clés API**.`, toolCalls: [] };
+        if (!r._toolCalls) return { message: r.message || '', toolCalls: allToolCalls };
+        // Execute tool calls
+        const toolResultMsgs = [];
+        for (const tc of r._toolCalls) {
+          const fnName = tc.function?.name;
+          let fnInput = {};
+          try { fnInput = JSON.parse(tc.function?.arguments || '{}'); } catch { fnInput = {}; }
+          const result = await executeTool(fnName, fnInput, permissions);
+          // Optimisation 4: tronquer les résultats volumineux
+          const trimmed = trimToolResult(result);
+          allToolCalls.push({ tool: fnName, input: fnInput, result });
+          toolResultMsgs.push({ role: 'tool', tool_call_id: tc.id, name: fnName, content: JSON.stringify(trimmed) });
+        }
+        currentMsgs = [...currentMsgs, { role: 'assistant', tool_calls: r._toolCalls, content: null }, ...toolResultMsgs];
+      }
+      return { message: '✅ Actions effectuées.', toolCalls: allToolCalls };
     }
+    // Apply sliding window to all providers
+    const slim = applySliding(messages);
     if (model.startsWith('gemini/') || model.startsWith('gemini-')) {
-      const r = await callGemini(messages, model);
+      const r = await callGemini(slim, model);
       return r || { message: `❌ Clé API Gemini non configurée. Ajoutez-la dans **Paramètres → Clés API**.`, toolCalls: [] };
     }
+    if (model.startsWith('kimi/')) {
+      const r = await callKimi(slim, model);
+      return r || { message: `❌ Clé API Kimi non configurée. Ajoutez-la dans **Paramètres → Clés API** (provider : kimi).`, toolCalls: [] };
+    }
+    if (model.startsWith('minimax/')) {
+      const r = await callMinimax(slim, model);
+      return r || { message: `❌ Clé API MiniMax non configurée. Ajoutez-la dans **Paramètres → Clés API** (provider : minimax).`, toolCalls: [] };
+    }
+    if (model.startsWith('zhipu/')) {
+      const r = await callZhipu(slim, model);
+      return r || { message: `❌ Clé API Zhipu non configurée. Ajoutez-la dans **Paramètres → Clés API** (provider : zhipu).`, toolCalls: [] };
+    }
+    if (model.startsWith('deepseek/')) {
+      const r = await callDeepSeek(slim, model);
+      return r || { message: `❌ Clé API DeepSeek non configurée. Ajoutez-la dans **Paramètres → Clés API** (provider : deepseek).`, toolCalls: [] };
+    }
     if (model.startsWith('openrouter/') && !model.includes('claude')) {
-      const r = await callOpenRouter(messages, model);
+      const r = await callOpenRouter(slim, model);
       return r || { message: `❌ Clé API OpenRouter non configurée. Ajoutez-la dans **Paramètres → Clés API**.`, toolCalls: [] };
     }
-    const anthropicResult = await callAnthropic(messages, model, permissions);
+    const anthropicResult = await callAnthropic(slim, model, permissions);
     if (anthropicResult) return anthropicResult;
     return await smartMock(messages, permissions);
   } catch (e) {
@@ -841,7 +1280,8 @@ const server = http.createServer((req, res) => {
   const url  = new URL(req.url, `http://localhost:${PORT}`);
   const path = url.pathname;
 
-  const isPublic = PUBLIC_PREFIXES.some(p => path.startsWith(p))
+  const isPublic = !path.startsWith('/api/')
+    || PUBLIC_PREFIXES.some(p => path.startsWith(p))
     || (path === '/api/tasks' && req.method === 'GET' && url.searchParams.get('stream') === '1');
   if (!isPublic && !requireAuth(req, res)) return;
 
@@ -1117,11 +1557,18 @@ const server = http.createServer((req, res) => {
     body(async b => {
       const id = `mod_${Date.now()}`;
       const safe = sanitizeObject(b);
+      const nomVal = safe.name || safe.nom || 'Sans nom';
       await pool.query(
-        `INSERT INTO modeles (id, name, instructions, skill_name, agent, canal, destinataire, llm_model, disable_pre_instructions, execution_count)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,0)`,
-        [id, safe.name || safe.nom || 'Sans nom', safe.instructions || null, safe.skillName || null, safe.agent || 'main', safe.canal || null, safe.destinataire || null, safe.llmModel || null, safe.disablePreInstructions || false]
-      );
+        `INSERT INTO modeles (id, nom, name, description, instructions, skill_name, agent, canal, destinataire, llm_model, disable_pre_instructions, execution_count)
+         VALUES ($1,$2,$2,$3,$4,$5,$6,$7,$8,$9,$10,0)`,
+        [id, nomVal, safe.description || null, safe.instructions || null, safe.skillName || null, safe.agent || 'main', safe.canal || null, safe.destinataire || null, safe.llmModel || null, safe.disablePreInstructions || false]
+      ).catch(async () => {
+        // Fallback si certaines colonnes n'existent pas
+        await pool.query(
+          `INSERT INTO modeles (id, nom, instructions, agent, llm_model, execution_count) VALUES ($1,$2,$3,$4,$5,0)`,
+          [id, nomVal, safe.instructions || null, safe.agent || 'main', safe.llmModel || null]
+        );
+      });
       const { rows } = await pool.query('SELECT * FROM modeles WHERE id=$1', [id]);
       json(201, rowToModele(rows[0]));
     });
@@ -1327,12 +1774,12 @@ const server = http.createServer((req, res) => {
       const id = `skl_${Date.now()}`;
       const safe = sanitizeObject(b);
       await pool.query(
-        `INSERT INTO skills (id, name, description, content, tags) VALUES ($1,$2,$3,$4,$5)`,
+        `INSERT INTO skills (id, nom, description, content, tags) VALUES ($1,$2,$3,$4,$5)`,
         [id, safe.name || safe.nom || 'Sans nom', safe.description || null, safe.contenu || safe.content || null, safe.tags || []]
       );
       const { rows } = await pool.query('SELECT * FROM skills WHERE id=$1', [id]);
       const r = rows[0];
-      json(201, { id: r.id, name: r.name, description: r.description, contenu: r.content, tags: r.tags });
+      json(201, { id: r.id, name: r.nom || r.name, description: r.description, contenu: r.content, tags: r.tags });
     });
     return;
   }
@@ -1494,6 +1941,21 @@ const server = http.createServer((req, res) => {
   }
 
   // ── Settings — API Keys (BYOK)
+  // ── Filesystem access settings
+  if (path === '/api/settings/filesystem' && req.method === 'GET') {
+    return json(200, { enabled: fsGlobalEnabled, allowedPaths: fsAllowedPaths, blocked: FS_BLOCKED });
+  }
+  if (path === '/api/settings/filesystem' && req.method === 'POST') {
+    body(b => {
+      if (typeof b.enabled === 'boolean') fsGlobalEnabled = b.enabled;
+      if (Array.isArray(b.allowedPaths)) fsAllowedPaths = b.allowedPaths.filter(p => typeof p === 'string' && p.length > 2);
+      if (b.addPath && typeof b.addPath === 'string' && b.addPath.length > 2 && !fsAllowedPaths.includes(b.addPath)) fsAllowedPaths.push(b.addPath);
+      if (b.removePath) fsAllowedPaths = fsAllowedPaths.filter(p => p !== b.removePath);
+      json(200, { ok: true, enabled: fsGlobalEnabled, allowedPaths: fsAllowedPaths });
+    });
+    return;
+  }
+
   if (path === '/api/settings/keys' && req.method === 'GET') {
     const status = Object.fromEntries(Object.entries(apiKeys).map(([k, v]) => [k, v && v.trim().length > 0]));
     return json(200, { configured: status });
