@@ -74,15 +74,34 @@ const MOCK_APPROVALS: ApprovalRequest[] = [
 ];
 
 export const ApprovalsWidget = () => {
-  const [requests,  setRequests]  = useState<ApprovalRequest[]>([]);
-  const [loading,   setLoading]   = useState(true);
-  const [acting,    setActing]    = useState<string | null>(null);
-  const [expanded,  setExpanded]  = useState<string | null>(null);
-  const [sseActive, setSseActive] = useState(false);
-  const [useMock,   setUseMock]   = useState(false);
+  const [requests,     setRequests]     = useState<ApprovalRequest[]>([]);
+  const [loading,      setLoading]      = useState(true);
+  const [acting,       setActing]       = useState<string | null>(null);
+  const [expanded,     setExpanded]     = useState<string | null>(null);
+  const [sseActive,    setSseActive]    = useState(false);
+  const [useMock,      setUseMock]      = useState(false);
+  const [sandboxName,  setSandboxName]  = useState('my-assistant');
   const sseRef = useRef<EventSource | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const osRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const { chatCtx, openChat, closeChat } = useTaskChat();
+
+  // ── Poll OpenShell blocked requests (via NemoClaw bridge) ─────────────────
+  const pollOpenShell = useCallback((name: string) => {
+    apiFetch(`${BASE}/api/nemoclaw/${name}/approvals`)
+      .then(r => r.json())
+      .then((data: any) => {
+        const items: ApprovalRequest[] = Array.isArray(data) ? data : [];
+        if (items.length > 0) {
+          setRequests(prev => {
+            const ids = new Set(prev.map(r => r.id));
+            return [...prev, ...items.filter(r => !ids.has(r.id))];
+          });
+          setUseMock(false);
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   // ── REST fetch (initial load + fallback polling) ─────────────────────────
   const fetchApprovals = useCallback((silent = false) => {
@@ -174,6 +193,14 @@ export const ApprovalsWidget = () => {
     };
   }, [connectSSE]);
 
+  // Poll OpenShell séparé — se relance à chaque changement de sandboxName
+  useEffect(() => {
+    if (osRef.current) clearInterval(osRef.current);
+    pollOpenShell(sandboxName); // Poll immédiat dès que le nom change
+    osRef.current = setInterval(() => pollOpenShell(sandboxName), 20000);
+    return () => { if (osRef.current) clearInterval(osRef.current); };
+  }, [pollOpenShell, sandboxName]);
+
   const handleDecision = async (id: string, decision: 'approve' | 'reject') => {
     setActing(id);
     try {
@@ -228,6 +255,23 @@ export const ApprovalsWidget = () => {
           {sseActive ? <Wifi size={10} /> : <WifiOff size={10} />}
           {sseActive ? 'Temps réel' : useMock ? 'Démo' : 'Polling'}
         </span>
+        {/* OpenShell sandbox selector */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginLeft: 6 }}>
+          <span style={{ fontSize: '10px', color: 'var(--text-muted)', fontWeight: 700 }}>OpenShell:</span>
+          <input
+            value={sandboxName}
+            onChange={e => setSandboxName(e.target.value)}
+            style={{ fontSize: '10px', padding: '2px 7px', borderRadius: 5, background: 'rgba(118,185,0,0.08)', border: '1px solid rgba(118,185,0,0.25)', color: '#76b900', width: 110, outline: 'none' }}
+            placeholder="my-assistant"
+          />
+          <button
+            onClick={() => pollOpenShell(sandboxName)}
+            title="Forcer le poll OpenShell"
+            style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#76b900', padding: 2 }}
+          >
+            <RefreshCw size={11} />
+          </button>
+        </div>
         <button
           onClick={() => fetchApprovals()}
           disabled={loading}

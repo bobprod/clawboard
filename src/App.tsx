@@ -214,7 +214,7 @@ const Sidebar = () => (
 
 const LiveCost = () => {
   const { data } = useSSE<{ totalCost24h: number } | null>('/api/quota', null);
-  const cost = data?.totalCost24h ?? 2.64;
+  const cost = Number(data?.totalCost24h ?? 2.64);
   return (
     <div className="api-cost-widget">
       <span className="text-muted">Coût API (24h) :</span>

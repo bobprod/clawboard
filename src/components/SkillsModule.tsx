@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import { ToyBrick, Search, Trash2, Edit3, Plus, Code, X, Save, RefreshCw, Check, ToggleLeft, ToggleRight } from 'lucide-react';
+import { useState, useEffect, useRef } from 'react';
+import { ToyBrick, Search, Trash2, Edit3, Plus, Code, X, Save, RefreshCw, Check, ToggleLeft, ToggleRight, Play, Server, ChevronDown, ChevronUp } from 'lucide-react';
 import { apiFetch } from '../lib/apiFetch';
 
 const BASE = 'http://localhost:4000';
@@ -33,6 +33,13 @@ export const SkillsModule = () => {
   const [saved, setSaved]             = useState(false);
   const [toast, setToast]             = useState<string | null>(null);
   const [form, setForm]               = useState({ name: '', desc: '', version: '1.0.0', source: 'local', content: '' });
+  const [showRunPanel,  setShowRunPanel]  = useState(false);
+  const [sandboxName,   setSandboxName]   = useState('my-assistant');
+  const [runPrompt,     setRunPrompt]     = useState('');
+  const [runModel,      setRunModel]      = useState('nvidia/nemotron-3-super-120b-a12b');
+  const [runOutput,     setRunOutput]     = useState<string[]>([]);
+  const [running,       setRunning]       = useState(false);
+  const runEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     apiFetch(`${BASE}/api/skills`).then(r => r.json()).then(d => setSkills(Array.isArray(d) ? d : [])).catch(() => {});
@@ -94,6 +101,45 @@ export const SkillsModule = () => {
     } catch { showMsg('Erreur création'); }
     setSaving(false);
   };
+
+  const handleRunInSandbox = () => {
+    if (!selected || !runPrompt.trim() || running) return;
+    setRunning(true);
+    setRunOutput([]);
+    const es = new EventSource(`${BASE}/api/nemoclaw/${sandboxName}/run-skill?skill=${encodeURIComponent(selected.name)}&prompt=${encodeURIComponent(runPrompt)}&model=${encodeURIComponent(runModel)}`);
+    // Use fetch + ReadableStream for POST
+    fetch(`${BASE}/api/nemoclaw/${sandboxName}/run-skill`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('clawboard_token') || ''}` },
+      body: JSON.stringify({ skill: selected.name, prompt: runPrompt, model: runModel }),
+    }).then(async res => {
+      es.close();
+      const reader = res.body?.getReader();
+      if (!reader) { setRunning(false); return; }
+      const dec = new TextDecoder();
+      let buf = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const parts = buf.split('\n\n');
+        buf = parts.pop() || '';
+        for (const part of parts) {
+          const dataLine = part.split('\n').find(l => l.startsWith('data: '));
+          if (!dataLine) continue;
+          try {
+            const d = JSON.parse(dataLine.slice(6));
+            if (d.line) setRunOutput(prev => [...prev.slice(-500), d.line]);
+            if (d.error) setRunOutput(prev => [...prev, `⚠️ ${d.error}`]);
+            if (d.done) { setRunning(false); }
+          } catch { /* ignore */ }
+        }
+      }
+      setRunning(false);
+    }).catch(() => { setRunning(false); showMsg('Erreur connexion sandbox'); es.close(); });
+  };
+
+  useEffect(() => { runEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [runOutput]);
 
   const filtered = skills.filter(s => !search || [s.name, s.desc, s.source].some(v => v.toLowerCase().includes(search.toLowerCase())));
 
@@ -239,8 +285,70 @@ export const SkillsModule = () => {
               <textarea
                 value={editContent}
                 onChange={e => setEditContent(e.target.value)}
-                style={{ flex: 1, background: 'var(--bg-surface)', color: 'var(--text-primary)', padding: 20, border: 'none', resize: 'none', outline: 'none', fontSize: '13px', lineHeight: 1.7, fontFamily: 'var(--mono)', minHeight: 400 }}
+                style={{ flex: 1, background: 'var(--bg-surface)', color: 'var(--text-primary)', padding: 20, border: 'none', resize: 'none', outline: 'none', fontSize: '13px', lineHeight: 1.7, fontFamily: 'var(--mono)', minHeight: 300 }}
               />
+
+              {/* ── Run in Sandbox panel ────────────────────────────────── */}
+              <div style={{ borderTop: '1px solid var(--border-subtle)' }}>
+                <button
+                  onClick={() => setShowRunPanel(v => !v)}
+                  style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 8, padding: '10px 16px', background: 'var(--bg-glass)', border: 'none', cursor: 'pointer', color: '#76b900', fontWeight: 700, fontSize: '12px' }}
+                >
+                  <Server size={13} />
+                  Exécuter dans sandbox NemoClaw
+                  {showRunPanel ? <ChevronUp size={12} style={{ marginLeft: 'auto' }} /> : <ChevronDown size={12} style={{ marginLeft: 'auto' }} />}
+                </button>
+                {showRunPanel && (
+                  <div style={{ padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 10, background: 'rgba(118,185,0,0.03)' }}>
+                    {/* Config row */}
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                        <label style={{ fontSize: '10px', fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase' }}>Sandbox</label>
+                        <input value={sandboxName} onChange={e => setSandboxName(e.target.value)} style={{ ...inputStyle, fontSize: '12px', fontFamily: 'var(--mono)' }} placeholder="my-assistant" />
+                      </div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                        <label style={{ fontSize: '10px', fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase' }}>Modèle</label>
+                        <select value={runModel} onChange={e => setRunModel(e.target.value)} style={{ ...inputStyle, fontSize: '12px', cursor: 'pointer' }}>
+                          <option value="nvidia/nemotron-3-super-120b-a12b">Nemotron 120B</option>
+                          <option value="nvidia/llama-3.1-nemotron-ultra-253b-v1">Nemotron Ultra 253B</option>
+                          <option value="meta/llama-3.1-405b-instruct">Llama 405B</option>
+                          <option value="deepseek-ai/deepseek-v3.2">DeepSeek V3</option>
+                          <option value="claude-sonnet-4-6">Claude Sonnet</option>
+                        </select>
+                      </div>
+                    </div>
+                    {/* Prompt */}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                      <label style={{ fontSize: '10px', fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase' }}>Prompt / Instructions</label>
+                      <div style={{ display: 'flex', gap: 8 }}>
+                        <textarea
+                          value={runPrompt}
+                          onChange={e => setRunPrompt(e.target.value)}
+                          rows={2}
+                          placeholder={`Exécuter ${selected?.name} avec…`}
+                          style={{ ...inputStyle, resize: 'none', fontSize: '13px', fontFamily: 'inherit', flex: 1 }}
+                        />
+                        <button
+                          onClick={handleRunInSandbox}
+                          disabled={!runPrompt.trim() || running}
+                          style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '0 18px', borderRadius: 8, border: 'none', background: running ? 'rgba(118,185,0,0.35)' : 'rgba(118,185,0,0.85)', color: '#fff', cursor: running ? 'not-allowed' : 'pointer', fontWeight: 700, fontSize: '13px', whiteSpace: 'nowrap', flexShrink: 0 }}
+                        >
+                          {running ? <RefreshCw size={13} style={{ animation: 'spin 1s linear infinite' }} /> : <Play size={13} />}
+                          {running ? 'En cours…' : 'Lancer'}
+                        </button>
+                      </div>
+                    </div>
+                    {/* Output */}
+                    {runOutput.length > 0 && (
+                      <div style={{ background: 'rgba(0,0,0,0.3)', borderRadius: 8, padding: '12px 14px', maxHeight: 200, overflowY: 'auto', fontFamily: 'var(--mono)', fontSize: '12px', color: '#10b981', border: '1px solid rgba(118,185,0,0.2)' }}>
+                        {runOutput.map((line, i) => <div key={i}>{line}</div>)}
+                        {running && <div style={{ color: '#76b900', animation: 'blink 1s step-start infinite' }}>▌</div>}
+                        <div ref={runEndRef} />
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
             </>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', flex: 1, minHeight: 300, color: 'var(--text-muted)', gap: 12 }}>
@@ -251,7 +359,7 @@ export const SkillsModule = () => {
         </div>
       </div>
 
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } } @keyframes blink { 50% { opacity: 0; } }`}</style>
     </div>
   );
 };

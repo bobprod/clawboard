@@ -12,10 +12,16 @@ function getToken(): string {
   return localStorage.getItem('clawboard-token') ?? ENV_TOKEN;
 }
 
-export function apiFetch(url: string, init: RequestInit = {}): Promise<Response> {
+export async function apiFetch(url: string, init: RequestInit = {}): Promise<Response> {
   const token = getToken();
   if (!token) return fetch(url, init);
   const headers = new Headers(init.headers);
   headers.set('Authorization', `Bearer ${token}`);
-  return fetch(url, { ...init, headers });
+  const res = await fetch(url, { ...init, headers });
+  if (res.status === 401) {
+    // Token invalide — on vide le localStorage et on redirige vers login
+    localStorage.removeItem('clawboard-token');
+    window.location.href = '/';
+  }
+  return res;
 }

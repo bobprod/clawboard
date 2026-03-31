@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
   Search, Database, FileText, BrainCircuit, Plus, Trash2, Save, X,
-  RefreshCw, Check, Edit3, Eye, Code2, AlertTriangle,
+  RefreshCw, Check, Edit3, Eye, Code2, AlertTriangle, Server, Download, Upload,
 } from 'lucide-react';
 import { apiFetch } from '../lib/apiFetch';
 
@@ -74,6 +74,12 @@ export const MemoryModule = () => {
   const [lastSync,      setLastSync]      = useState<Date | null>(null);
   const [syncing,       setSyncing]       = useState(false);
   const [form,          setForm]          = useState({ title: '', type: 'Document', content: '', tags: '' });
+  const [sandboxSync,   setSandboxSync]   = useState<{ file: string; content: string } | null>(null);
+  const [sandboxSyncing, setSandboxSyncing] = useState(false);
+  const [sandboxWriting, setSandboxWriting] = useState(false);
+  const [sandboxName,   setSandboxName]   = useState('my-assistant');
+  const [serverSearch,  setServerSearch]  = useState<MemDoc[] | null>(null); // résultats recherche serveur
+  const [serverSearching, setServerSearching] = useState(false);
 
   const showMsg = (msg: string) => { setToast(msg); setTimeout(() => setToast(null), 3000); };
 
@@ -87,6 +93,26 @@ export const MemoryModule = () => {
     setSyncing(false);
   }, []);
 
+  // Recherche texte côté serveur (filtre client sinon)
+  useEffect(() => {
+    if (search.length < 3) { setServerSearch(null); return; }
+    const timer = setTimeout(async () => {
+      setServerSearching(true);
+      try {
+        // Recherche par titre/tags via filtre serveur (GET avec ?q=)
+        const r = await apiFetch(`${BASE}/api/memory?q=${encodeURIComponent(search)}`);
+        const data = await r.json();
+        const results = Array.isArray(data) ? data : (data.docs ?? data.data ?? null);
+        setServerSearch(results);
+      } catch {
+        setServerSearch(null); // Fallback: filtre client
+      } finally {
+        setServerSearching(false);
+      }
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [search]);
+
   useEffect(() => { fetchDocs(); }, [fetchDocs]);
 
   const handleSelect = (doc: MemDoc) => {
@@ -98,6 +124,8 @@ export const MemoryModule = () => {
 
   const handleSave = async () => {
     if (!selected) return;
+    // Sandbox doc — route to sandbox write
+    if (selected.id.startsWith('__sandbox__')) { await handleSandboxWrite(); return; }
     setSaving(true);
     try {
       const r = await apiFetch(`${BASE}/api/memory/${selected.id}`, {
@@ -151,9 +179,42 @@ export const MemoryModule = () => {
     setShowForm(false);
   };
 
-  const filtered = docs
+  // ── NemoClaw sandbox memory sync ──────────────────────────────────────────
+  const handleSandboxRead = async (file: string) => {
+    setSandboxSyncing(true);
+    try {
+      const r = await apiFetch(`${BASE}/api/nemoclaw/${sandboxName}/memory/${file}`);
+      const data = await r.json();
+      setSandboxSync({ file, content: data.content || '' });
+      // Also show as selected/editable doc
+      setSelected({ id: `__sandbox__${file}`, title: `[Sandbox] ${file}`, type: 'System Concept', content: data.content || '', tags: ['sandbox', sandboxName], chars: (data.content || '').length, createdAt: '', updatedAt: '' });
+      setEditContent(data.content || '');
+      setDirty(false);
+      showMsg(`✓ ${file} chargé depuis le sandbox`);
+    } catch { showMsg(`Erreur lecture ${file} depuis sandbox`); }
+    setSandboxSyncing(false);
+  };
+
+  const handleSandboxWrite = async () => {
+    if (!selected?.id.startsWith('__sandbox__') || !sandboxSync) return;
+    setSandboxWriting(true);
+    try {
+      await apiFetch(`${BASE}/api/nemoclaw/${sandboxName}/memory/${sandboxSync.file}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: editContent }),
+      });
+      setSandboxSync({ file: sandboxSync.file, content: editContent });
+      setDirty(false);
+      showMsg(`✓ ${sandboxSync.file} écrit dans le sandbox`);
+    } catch { showMsg(`Erreur écriture dans sandbox`); }
+    setSandboxWriting(false);
+  };
+
+  // Si le serveur a renvoyé des résultats pour la recherche, les utiliser ; sinon filtre client
+  const filtered = (serverSearch !== null ? serverSearch : docs)
     .filter(d => typeFilter === 'Tous' || d.type === typeFilter)
-    .filter(d => !search || [d.title, d.type, ...d.tags].some(v => v.toLowerCase().includes(search.toLowerCase())));
+    .filter(d => !search || serverSearch !== null || [d.title, d.type, ...d.tags].some(v => v.toLowerCase().includes(search.toLowerCase())));
 
   const wordCount = editContent.trim() ? editContent.trim().split(/\s+/).length : 0;
 
@@ -236,6 +297,71 @@ export const MemoryModule = () => {
               <span>{f.icon}</span> {f.label}
             </button>
           ))}
+        </div>
+      </div>
+
+      {/* ── NemoClaw Sandbox Sync ───────────────────────────────────────── */}
+      <div style={{
+        padding: '12px 16px', borderRadius: 12,
+        background: 'rgba(118,185,0,0.05)', border: '1px solid rgba(118,185,0,0.2)',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10, gap: 10, flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <Server size={14} style={{ color: '#76b900' }} />
+            <span style={{ fontSize: '11px', fontWeight: 700, color: '#76b900', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+              Sandbox NemoClaw
+            </span>
+            <input
+              value={sandboxName}
+              onChange={e => setSandboxName(e.target.value)}
+              style={{ fontSize: '11px', padding: '3px 8px', borderRadius: 5, background: 'rgba(118,185,0,0.08)', border: '1px solid rgba(118,185,0,0.25)', color: '#76b900', width: 120, outline: 'none' }}
+              placeholder="my-assistant"
+            />
+          </div>
+          {selected?.id.startsWith('__sandbox__') && sandboxSync && (
+            <button
+              onClick={handleSandboxWrite}
+              disabled={sandboxWriting || !dirty}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 5, padding: '5px 11px',
+                borderRadius: 6, fontSize: '11px', fontWeight: 700, cursor: sandboxWriting || !dirty ? 'not-allowed' : 'pointer',
+                background: dirty ? 'rgba(118,185,0,0.15)' : 'var(--bg-glass)',
+                border: `1px solid ${dirty ? 'rgba(118,185,0,0.4)' : 'var(--border-subtle)'}`,
+                color: dirty ? '#76b900' : 'var(--text-muted)', opacity: sandboxWriting ? 0.7 : 1,
+              }}
+            >
+              <Upload size={11} />
+              {sandboxWriting ? 'Écriture…' : `Écrire dans sandbox`}
+            </button>
+          )}
+        </div>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          {['MEMORY.md', 'SOUL.md', 'AGENTS.md', 'HEARTBEAT.md', 'CLAUDE.md', 'NOTES.md'].map(file => (
+            <button
+              key={file}
+              onClick={() => handleSandboxRead(file)}
+              disabled={sandboxSyncing}
+              title={`Lire ${file} depuis le sandbox ${sandboxName}`}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 5, padding: '5px 12px',
+                borderRadius: 20, cursor: sandboxSyncing ? 'wait' : 'pointer',
+                background: sandboxSync?.file === file && selected?.id.startsWith('__sandbox__') ? 'rgba(118,185,0,0.15)' : 'var(--bg-glass)',
+                border: `1px solid ${sandboxSync?.file === file && selected?.id.startsWith('__sandbox__') ? 'rgba(118,185,0,0.4)' : 'var(--border-subtle)'}`,
+                color: sandboxSync?.file === file && selected?.id.startsWith('__sandbox__') ? '#76b900' : 'var(--text-secondary)',
+                fontSize: '11.5px', fontWeight: 600, transition: 'all 0.15s',
+                opacity: sandboxSyncing ? 0.6 : 1,
+              }}
+            >
+              <Download size={10} />
+              {file}
+            </button>
+          ))}
+          {sandboxSyncing && (
+            <span style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: '11px', color: '#76b900' }}>
+              <RefreshCw size={11} style={{ animation: 'spin 1s linear infinite' }} />
+              Lecture sandbox…
+            </span>
+          )}
         </div>
       </div>
 

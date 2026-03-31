@@ -155,8 +155,8 @@ export const GitLogModule = () => {
         apiFetch(`${BASE}/api/git/branches`).then(r => r.json()),
         apiFetch(`${BASE}/api/git/log?branch=${branch}&limit=${lim}`).then(r => r.json()),
       ]);
-      setBranches(bRes);
-      setCommits(cRes);
+      setBranches(Array.isArray(bRes) ? bRes : []);
+      setCommits(Array.isArray(cRes) ? cRes : []);
     } catch {
       // Mock graceful fallback
       setBranches(MOCK_BRANCHES);

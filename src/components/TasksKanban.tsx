@@ -32,7 +32,7 @@ export const TasksKanban = () => {
   const [filterAgent, setFilterAgent]   = useState<string>('all');
   const [dragTaskId, setDragTaskId]     = useState<string | null>(null);
   const [dropTarget, setDropTarget]     = useState<string | null>(null);
-  const [agents, setAgents]             = useState<Agent[]>(mockAgents);
+  const [agents, setAgents]             = useState<Agent[]>([]);
 
   useEffect(() => {
     apiFetch(`${BASE}/api/agents`)
@@ -40,7 +40,7 @@ export const TasksKanban = () => {
       .then((data: Agent[]) => {
         if (Array.isArray(data) && data.length > 0) setAgents(data);
       })
-      .catch(() => {}); // graceful fallback: keep mockAgents
+      .catch(() => { setAgents(mockAgents); }); // graceful fallback: utilise mockAgents si API indisponible
   }, []);
 
   const { data: liveTasks } = useSSE<Task[] | null>('/api/tasks?stream=1', null);
@@ -246,7 +246,7 @@ export const TasksKanban = () => {
                               alt="" style={{ width: '22px', height: '22px', borderRadius: '50%', border: '1px solid var(--border-subtle)' }}
                             />
                             <span style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-secondary)' }}>
-                              {mockAgents.find(a => a.id === task.agentId)?.name || 'Agent'}
+                              {agents.find(a => a.id === task.agentId)?.name || agents[0]?.name || 'Agent'}
                             </span>
                           </div>
                           <div style={{ display: 'flex', gap: '5px', fontSize: '10px', fontFamily: 'var(--mono)', fontWeight: 600, textTransform: 'uppercase' }}>

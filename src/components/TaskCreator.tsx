@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { apiFetch } from '../lib/apiFetch';
 import { SkillsPicker } from './SkillsPicker';
@@ -6,7 +6,7 @@ import {
   ArrowLeft, Save, Play, Plus, Minus,
   ToggleLeft, ToggleRight, PenLine, Loader2, HelpCircle,
   BookmarkPlus, AlertTriangle, AlertCircle, Info, X, RotateCcw,
-  QrCode, RefreshCw, Copy, CheckCircle2, Link2, Send,
+  QrCode, RefreshCw, Copy, CheckCircle2, Link2, Send, Zap,
 } from 'lucide-react';
 import { TaskCreatorTour, resetTaskCreatorTour } from './TaskCreatorTour';
 
@@ -24,6 +24,41 @@ const MODELS = [
   { id: 'gemini/gemini-2.5-flash',                 label: 'Gemini 2.5 Flash',       color: '#4285f4' },
   { id: 'ollama/qwen2.5',                          label: 'Qwen 2.5 (local)',        color: '#10b981' },
 ];
+
+// ── Smart LLM Router ─────────────────────────────────────────────────────────
+const MODEL_ROUTER: { keywords: string[]; model: string; reason: string }[] = [
+  {
+    keywords: ['code', 'script', 'fonction', 'function', 'bug', 'debug', 'python', 'javascript', 'typescript', 'api', 'programme', 'coder', 'développe', 'implement', 'refactor', 'test unitaire', 'unit test', 'class', 'module', 'endpoint', 'sql', 'regex', 'algorithme'],
+    model: 'meta/llama-3.1-405b-instruct',
+    reason: 'code détecté',
+  },
+  {
+    keywords: ['analyse', 'analyze', 'research', 'rapport', 'résumé', 'summarize', 'insight', 'données', 'data', 'compare', 'évalue', 'audit', 'étudie', 'revue', 'review', 'benchmark', 'rapport de', 'synthèse'],
+    model: 'nvidia/llama-3.1-nemotron-ultra-253b-v1',
+    reason: 'analyse détectée',
+  },
+  {
+    keywords: ['rédige', 'écris', 'traduit', 'email', 'article', 'blog', 'contenu', 'rédaction', 'write', 'letter', 'creative', 'présentation', 'doc', 'documentation', 'readme', 'copywriting'],
+    model: 'claude-sonnet-4-6',
+    reason: 'rédaction détectée',
+  },
+  {
+    keywords: ['math', 'calcul', 'equation', 'statistique', 'formula', 'calcule', 'résoudre', 'solve', 'theorem', 'probability', 'intégrale', 'dérivée', 'optimisation', 'modèle mathématique'],
+    model: 'deepseek-ai/deepseek-v3.2',
+    reason: 'maths/raisonnement détecté',
+  },
+];
+
+function suggestModel(text: string): { model: string; label: string; reason: string } | null {
+  const lower = text.toLowerCase();
+  for (const { keywords, model, reason } of MODEL_ROUTER) {
+    if (keywords.some(k => lower.includes(k))) {
+      const found = MODELS.find(m => m.id === model);
+      return { model, label: found?.label ?? model, reason };
+    }
+  }
+  return null;
+}
 
 const CHANNELS = ['telegram', 'discord', 'whatsapp', 'webhook'] as const;
 
@@ -483,6 +518,39 @@ export const TaskCreator = () => {
 
   const canSave = name.trim().length > 0;
 
+  // ── Auto LLM suggestion — client-side + serveur ────────────────────────────
+  const [serverSuggestion, setServerSuggestion] = useState<{ model: string; label: string; reason: string } | null>(null);
+
+  useEffect(() => {
+    if (llmModel) { setServerSuggestion(null); return; }
+    const text = (instructions + ' ' + name).trim();
+    if (text.length < 10) { setServerSuggestion(null); return; }
+    const timer = setTimeout(async () => {
+      try {
+        const r = await apiFetch(`${BASE}/api/suggest-model`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ instructions, name }),
+        });
+        const d = await r.json();
+        if (d.model) {
+          const found = MODELS.find(m => m.id === d.model);
+          setServerSuggestion({ model: d.model, label: found?.label ?? d.model, reason: d.reason ?? 'Suggestion serveur' });
+        } else {
+          setServerSuggestion(null);
+        }
+      } catch {
+        setServerSuggestion(null);
+      }
+    }, 600);
+    return () => clearTimeout(timer);
+  }, [instructions, name, llmModel]);
+
+  const autoSuggestion = useMemo(() => {
+    if (llmModel) return null; // already selected — don't override
+    return serverSuggestion ?? suggestModel(instructions + ' ' + name); // préférer la suggestion serveur
+  }, [instructions, name, llmModel, serverSuggestion]);
+
   // ── Enhance instructions ───────────────────────────────────────────────────
   const handleEnhance = async () => {
     if (!instructions.trim() || enhancing) return;
@@ -834,6 +902,31 @@ export const TaskCreator = () => {
               }}>
                 <AlertCircle size={12} />
                 ⚠️ Aucun modèle sélectionné — l'agent ne saura pas quel LLM utiliser
+              </div>
+            )}
+            {autoSuggestion && !modelError && (
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: 8,
+                marginTop: 6, padding: '7px 11px', borderRadius: 8, fontSize: '12px',
+                background: 'rgba(118,185,0,0.08)', border: '1px solid rgba(118,185,0,0.25)',
+                color: '#76b900',
+              }}>
+                <Zap size={12} style={{ flexShrink: 0 }} />
+                <span style={{ flex: 1 }}>
+                  <strong>Auto</strong> · {autoSuggestion.label}
+                  <span style={{ opacity: 0.75, marginLeft: 4 }}>· {autoSuggestion.reason}</span>
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setLlmModel(autoSuggestion.model)}
+                  style={{
+                    flexShrink: 0, padding: '3px 10px', borderRadius: 5, fontSize: '11px',
+                    fontWeight: 700, cursor: 'pointer', color: '#76b900',
+                    background: 'rgba(118,185,0,0.15)', border: '1px solid rgba(118,185,0,0.35)',
+                  }}
+                >
+                  Appliquer
+                </button>
               </div>
             )}
           </Field>

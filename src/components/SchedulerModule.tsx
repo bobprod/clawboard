@@ -1,7 +1,149 @@
-import { useState, useEffect } from 'react';
-import { CalendarClock, Play, Trash2, Plus, ToggleLeft, ToggleRight, Clock, Zap, Server, AlertCircle } from 'lucide-react';
+import { useState, useEffect, useCallback } from 'react';
+import { CalendarClock, Play, Trash2, Plus, ToggleLeft, ToggleRight, Clock, Zap, Server, AlertCircle, Workflow, Save, RefreshCw } from 'lucide-react';
 import { api } from '../hooks/useApi';
 import { apiFetch } from '../lib/apiFetch';
+
+const BASE = 'http://localhost:4000';
+
+// ─── Pipeline Node Editor (minimal) ───────────────────────────────────────────
+interface PipelineNode { id: string; type: string; label: string; x: number; y: number }
+interface PipelineEdge { id: string; source: string; target: string }
+interface Pipeline { nodes: PipelineNode[]; edges: PipelineEdge[]; savedAt?: string }
+
+function PipelinePanel() {
+  const [pipeline, setPipeline] = useState<Pipeline>({ nodes: [], edges: [] });
+  const [loading,  setLoading]  = useState(true);
+  const [saving,   setSaving]   = useState(false);
+  const [saved,    setSaved]    = useState(false);
+  const [error,    setError]    = useState<string | null>(null);
+
+  const fetchPipeline = useCallback(async () => {
+    setLoading(true);
+    try {
+      const r = await apiFetch(`${BASE}/api/pipeline`);
+      const d = await r.json();
+      setPipeline({ nodes: d.nodes || [], edges: d.edges || [], savedAt: d.savedAt });
+    } catch { setError('Impossible de charger le pipeline.'); }
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { fetchPipeline(); }, [fetchPipeline]);
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      const r = await apiFetch(`${BASE}/api/pipeline`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ nodes: pipeline.nodes, edges: pipeline.edges }),
+      });
+      const d = await r.json();
+      setPipeline(p => ({ ...p, savedAt: d.savedAt }));
+      setSaved(true); setTimeout(() => setSaved(false), 2000);
+    } catch { setError('Erreur sauvegarde pipeline.'); }
+    setSaving(false);
+  };
+
+  const nodeTypes = ['trigger', 'llm', 'tool', 'condition', 'output'];
+
+  const addNode = (type: string) => {
+    const id = `node_${Date.now()}`;
+    const x  = 80 + (pipeline.nodes.length % 4) * 190;
+    const y  = 60 + Math.floor(pipeline.nodes.length / 4) * 120;
+    setPipeline(p => ({ ...p, nodes: [...p.nodes, { id, type, label: type.charAt(0).toUpperCase() + type.slice(1), x, y }] }));
+  };
+
+  const removeNode = (id: string) => {
+    setPipeline(p => ({
+      nodes: p.nodes.filter(n => n.id !== id),
+      edges: p.edges.filter(e => e.source !== id && e.target !== id),
+    }));
+  };
+
+  const NODE_COLORS: Record<string, string> = {
+    trigger: '#10b981', llm: '#8b5cf6', tool: '#3b82f6', condition: '#f59e0b', output: '#ec4899',
+  };
+
+  return (
+    <div style={{ padding: '20px', background: 'var(--bg-glass)', borderRadius: 16, border: '1px solid var(--border-subtle)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <Workflow size={18} color="var(--brand-accent)" />
+          <span style={{ fontWeight: 700, fontSize: '0.95rem', color: 'var(--text-primary)' }}>Pipeline visuel</span>
+          {pipeline.savedAt && (
+            <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontFamily: 'var(--mono)' }}>
+              Sauvegardé {new Date(pipeline.savedAt).toLocaleTimeString('fr-FR')}
+            </span>
+          )}
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button onClick={fetchPipeline} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 4 }}>
+            <RefreshCw size={13} />
+          </button>
+          <button onClick={handleSave} disabled={saving} style={{
+            display: 'flex', alignItems: 'center', gap: 6, padding: '7px 14px', borderRadius: 8,
+            background: saved ? 'rgba(16,185,129,0.15)' : 'rgba(139,92,246,0.15)',
+            border: `1px solid ${saved ? 'rgba(16,185,129,0.4)' : 'rgba(139,92,246,0.4)'}`,
+            color: saved ? '#10b981' : 'var(--brand-accent)', fontWeight: 600, fontSize: '12px', cursor: 'pointer',
+          }}>
+            <Save size={13} /> {saved ? 'Sauvegardé ✓' : 'Sauvegarder'}
+          </button>
+        </div>
+      </div>
+
+      {/* Toolbar : ajouter des nodes */}
+      <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
+        {nodeTypes.map(t => (
+          <button key={t} onClick={() => addNode(t)} style={{
+            padding: '5px 12px', borderRadius: 20, border: `1px solid ${NODE_COLORS[t]}33`,
+            background: `${NODE_COLORS[t]}15`, color: NODE_COLORS[t],
+            fontWeight: 600, fontSize: '11px', cursor: 'pointer',
+          }}>+ {t}</button>
+        ))}
+      </div>
+
+      {loading ? (
+        <div style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 32, fontSize: 13 }}>Chargement…</div>
+      ) : error ? (
+        <div style={{ color: '#ef4444', fontSize: 13, padding: 12 }}>{error}</div>
+      ) : pipeline.nodes.length === 0 ? (
+        <div style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 32, fontSize: 13 }}>
+          Aucun node. Cliquez sur un type ci-dessus pour commencer.
+        </div>
+      ) : (
+        <div style={{ position: 'relative', minHeight: 200, background: 'rgba(0,0,0,0.15)', borderRadius: 12, padding: 16, overflowX: 'auto' }}>
+          {/* Edges (SVG) */}
+          <svg style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', pointerEvents: 'none' }}>
+            {pipeline.edges.map(e => {
+              const src = pipeline.nodes.find(n => n.id === e.source);
+              const tgt = pipeline.nodes.find(n => n.id === e.target);
+              if (!src || !tgt) return null;
+              const x1 = src.x + 70, y1 = src.y + 20, x2 = tgt.x, y2 = tgt.y + 20;
+              const mx = (x1 + x2) / 2;
+              return <path key={e.id} d={`M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}`}
+                fill="none" stroke="var(--brand-accent)" strokeWidth={1.5} strokeDasharray="4,3" opacity={0.6} />;
+            })}
+          </svg>
+          {/* Nodes */}
+          {pipeline.nodes.map(node => (
+            <div key={node.id} style={{
+              position: 'absolute', left: node.x, top: node.y,
+              background: 'var(--bg-card)', border: `1px solid ${NODE_COLORS[node.type] || '#555'}55`,
+              borderRadius: 10, padding: '8px 14px', minWidth: 120,
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span style={{ width: 8, height: 8, borderRadius: '50%', background: NODE_COLORS[node.type] || '#aaa', display: 'inline-block' }} />
+                <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-primary)' }}>{node.label}</span>
+              </div>
+              <button onClick={() => removeNode(node.id)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ef4444', fontSize: 12, lineHeight: 1 }}>✕</button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 interface Cron {
   id: string;
@@ -278,6 +420,11 @@ export const SchedulerModule = () => {
             </div>
           );
         })}
+      </div>
+
+      {/* Pipeline visuel — branché sur /api/pipeline */}
+      <div style={{ marginTop: 32 }}>
+        <PipelinePanel />
       </div>
     </div>
   );

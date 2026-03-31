@@ -42,7 +42,7 @@ export const FuelGauges = () => {
         {data && (
           <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', color: '#10b981', fontWeight: 700, fontFamily: 'var(--mono)' }}>
             <DollarSign size={13} />
-            {data.totalCost24h.toFixed(2)} / 24h
+            {Number(data.totalCost24h).toFixed(2)} / 24h
           </div>
         )}
       </div>
@@ -73,7 +73,7 @@ export const FuelGauges = () => {
                   <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                     {!q.local && q.cost > 0 && (
                       <span style={{ fontSize: '11px', fontFamily: 'var(--mono)', color: '#10b981' }}>
-                        ${q.cost.toFixed(3)}
+                        ${Number(q.cost).toFixed(3)}
                       </span>
                     )}
                     <span style={{ fontFamily: 'var(--mono)', fontSize: '12px', fontWeight: 700, color: pct !== null ? fuelColor(pct) : '#10b981' }}>

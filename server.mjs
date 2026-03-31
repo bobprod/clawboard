@@ -4,7 +4,7 @@ import crypto from 'crypto';
 import { readFileSync, existsSync, statSync, readdirSync } from 'fs';
 import { join as pathJoin, extname, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { spawn } from 'child_process';
+import { spawn, exec } from 'child_process';
 import pool, { checkConnection } from './src/db/client.js';
 import { pub as redisClient, connectRedis, cacheGet, cacheSet, cacheDel } from './src/lib/redis.js';
 
@@ -297,6 +297,26 @@ async function runPhase2Migration() {
     console.warn('[DB] pgvector non disponible — fonctionnalités embeddings désactivées:', e.message);
   }
 
+  // Table settings (TOTP + configs générales clé/valeur)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS settings (
+      key TEXT PRIMARY KEY,
+      value TEXT,
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+  `).catch(() => {});
+
+  // Colonne status/category dans skills (pour plugins)
+  await pool.query(`
+    ALTER TABLE skills ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'active';
+    ALTER TABLE skills ADD COLUMN IF NOT EXISTS category TEXT DEFAULT 'local';
+  `).catch(() => {});
+
+  // run_count dans recurrences
+  await pool.query(`
+    ALTER TABLE recurrences ADD COLUMN IF NOT EXISTS run_count INTEGER DEFAULT 0;
+  `).catch(() => {});
+
   console.log('[DB] Phase 2 migration OK');
 }
 
@@ -437,7 +457,36 @@ async function loadQuotas() {
 
 // ─── SSE + vitals ─────────────────────────────────────────────────────────────
 
-const sseClients = { vitals: new Set(), quota: new Set(), tasks: new Set(), logs: {} };
+const sseClients = { vitals: new Set(), quota: new Set(), tasks: new Set(), logs: {}, approvals: new Set() };
+
+// ─── Approval queue (in-memory, Human-in-the-loop) ────────────────────────────
+const approvalQueue = new Map(); // id -> ApprovalRequest
+
+// Poll OpenShell every 20s for blocked sandbox requests
+setInterval(() => {
+  const cmd = `wsl -d Ubuntu -- bash -c "curl -sk https://127.0.0.1:8080/api/v1/requests?status=blocked 2>/dev/null"`;
+  exec(cmd, { timeout: 8000 }, (err, stdout) => {
+    if (!stdout) return;
+    try {
+      const raw = JSON.parse(stdout);
+      const requests = (Array.isArray(raw) ? raw : (raw.requests || raw.items || []));
+      for (const r of requests) {
+        const id = `os_${r.id || r.requestId}`;
+        if (approvalQueue.has(id)) continue;
+        const item = {
+          id, taskId: r.sandbox || 'my-assistant', taskName: `Sandbox ${r.sandbox || 'my-assistant'}`,
+          agent: r.sandbox || 'my-assistant',
+          reason: `Requête réseau bloquée : ${r.method || 'GET'} ${r.url || r.host || 'inconnu'}`,
+          riskLevel: 'medium', requestedAt: r.timestamp || new Date().toISOString(),
+          payload: r, _openShellId: r.id || r.requestId,
+        };
+        approvalQueue.set(id, item);
+        const event = `event: approval\ndata: ${JSON.stringify(item)}\n\n`;
+        for (const c of sseClients.approvals) { try { c.write(event); } catch { sseClients.approvals.delete(c); } }
+      }
+    } catch { /* OpenShell not responding or no blocked requests */ }
+  });
+}, 20000);
 
 function broadcast(set, data) {
   const msg = `data: ${JSON.stringify(data)}\n\n`;
@@ -1808,7 +1857,20 @@ const server = http.createServer((req, res) => {
   }
 
   // ── Memory (QMD)
-  if (path === '/api/memory' && req.method === 'GET') { getAllMemoryDocs().then(d => json(200, d)).catch(err => json(500, { error: err.message })); return; }
+  if (path === '/api/memory' && req.method === 'GET') {
+    const q = url.searchParams.get('q');
+    if (q && q.length >= 2) {
+      pool.query(
+        `SELECT * FROM memory_docs WHERE titre ILIKE $1 OR content ILIKE $1 OR $1 = ANY(tags::text[]) ORDER BY updated_at DESC LIMIT 30`,
+        [`%${q}%`]
+      ).then(({ rows }) => {
+        json(200, rows.map(r => ({ id: r.id, title: r.titre, type: r.type || 'Document', content: r.content, chars: r.chars, tags: r.tags || [], createdAt: r.created_at, updatedAt: r.updated_at })));
+      }).catch(err => json(500, { error: err.message }));
+    } else {
+      getAllMemoryDocs().then(d => json(200, d)).catch(err => json(500, { error: err.message }));
+    }
+    return;
+  }
   if (path === '/api/memory' && req.method === 'POST') {
     body(async b => {
       const id = `mem_${Date.now()}`;
@@ -1916,6 +1978,24 @@ const server = http.createServer((req, res) => {
         [safe.nodes || [], safe.edges || []]
       );
       json(200, { nodes: safe.nodes || [], edges: safe.edges || [], savedAt: new Date().toISOString() });
+    });
+    return;
+  }
+
+  // ── Suggest Model (smart LLM router)
+  if (path === '/api/suggest-model' && req.method === 'POST') {
+    body(b => {
+      const text = ((b.instructions || '') + ' ' + (b.name || '')).toLowerCase();
+      const routes = [
+        { keywords: ['code', 'script', 'fonction', 'function', 'bug', 'debug', 'python', 'javascript', 'typescript', 'api', 'programme', 'implement', 'refactor', 'sql', 'regex', 'algorithme', 'unit test'], model: 'meta/llama-3.1-405b-instruct', reason: 'code détecté' },
+        { keywords: ['analyse', 'analyze', 'research', 'rapport', 'résumé', 'summarize', 'insight', 'données', 'data', 'compare', 'évalue', 'audit', 'benchmark', 'synthèse'], model: 'nvidia/llama-3.1-nemotron-ultra-253b-v1', reason: 'analyse détectée' },
+        { keywords: ['rédige', 'écris', 'traduit', 'email', 'article', 'blog', 'contenu', 'rédaction', 'write', 'letter', 'documentation', 'readme', 'copywriting'], model: 'claude-sonnet-4-6', reason: 'rédaction détectée' },
+        { keywords: ['math', 'calcul', 'equation', 'statistique', 'formula', 'calcule', 'résoudre', 'solve', 'theorem', 'probability', 'intégrale', 'dérivée'], model: 'deepseek-ai/deepseek-v3.2', reason: 'maths/raisonnement détecté' },
+      ];
+      for (const { keywords, model, reason } of routes) {
+        if (keywords.some(k => text.includes(k))) return json(200, { model, reason });
+      }
+      json(200, { model: null, reason: 'Aucun pattern détecté — sélection manuelle recommandée' });
     });
     return;
   }
@@ -2049,8 +2129,314 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ── Agents fleet
+  // ── NemoClaw sandbox bridge ────────────────────────────────────────────────
+
+  // Helper: run a nemoclaw CLI command via WSL and return stdout
+  function runNemoClawCmd(args) {
+    return new Promise((resolve, reject) => {
+      // Try native first, then WSL fallback
+      const cmd = `wsl -d Ubuntu -- bash -lc "nemoclaw ${args}" 2>&1`;
+      exec(cmd, { timeout: 15000 }, (err, stdout) => {
+        if (err && !stdout) return reject(err);
+        resolve((stdout || '').trim());
+      });
+    });
+  }
+
+  // Parse `nemoclaw list` text output into JSON array
+  function parseNemoClawList(raw) {
+    const sandboxes = [];
+    const lines = raw.split('\n').map(l => l.trim()).filter(Boolean);
+    let i = 0;
+    while (i < lines.length) {
+      const line = lines[i];
+      if (line === 'Sandboxes:' || line === 'No sandboxes found.') { i++; continue; }
+      // Name line: "my-assistant *" or "my-assistant"
+      if (!line.startsWith('model:') && !line.startsWith('[') && !line.startsWith('Run:') && !line.startsWith('Status:') && !line.startsWith('Logs:')) {
+        const isDefault = line.endsWith('*');
+        const name = isDefault ? line.slice(0, -1).trim() : line;
+        const sandbox = { name, default: isDefault, model: '', provider: '', gpu: false, policies: 'none', status: 'active' };
+        // Next line has metadata
+        if (lines[i + 1]?.startsWith('model:')) {
+          const meta = lines[i + 1];
+          sandbox.model    = (meta.match(/model:\s*(\S+)/) || [])[1] || '';
+          sandbox.provider = (meta.match(/provider:\s*(\S+)/) || [])[1] || '';
+          sandbox.gpu      = /GPU/.test(meta) && !/CPU/.test(meta);
+          sandbox.policies = (meta.match(/policies:\s*(.+)$/) || [])[1]?.trim() || 'none';
+          i++;
+        }
+        sandboxes.push(sandbox);
+      }
+      i++;
+    }
+    return sandboxes;
+  }
+
+  // Parse `nemoclaw <name> status` text output into JSON
+  function parseNemoClawStatus(raw) {
+    const get = (key) => (raw.match(new RegExp(`${key}:\\s*(.+)`, 'i')) || [])[1]?.trim() || '';
+    return {
+      model:    get('Model'),
+      provider: get('Provider'),
+      gpu:      /yes/i.test(get('GPU')),
+      policies: get('Policies'),
+      healthy:  /yes/i.test(get('Healthy')),
+      status:   /yes/i.test(get('Healthy')) ? 'active' : 'offline',
+      raw,
+    };
+  }
+
+  // Convert NemoClaw sandboxes to the Agent shape the frontend expects
+  function sandboxesToAgents(sandboxes) {
+    const cols = Math.max(1, Math.ceil(Math.sqrt(sandboxes.length)));
+    return sandboxes.map((s, i) => ({
+      id:       s.name,
+      label:    s.name,
+      role:     s.default ? 'Default Sandbox' : 'NemoClaw Sandbox',
+      model:    s.model || 'nemotron',
+      provider: s.provider,
+      gpu:      s.gpu,
+      policies: s.policies,
+      status:   s.status,
+      parentId: null,
+      position: { x: (i % cols) * 280 + 50, y: Math.floor(i / cols) * 220 + 50 },
+    }));
+  }
+
+  // ── Approvals (Human-in-the-loop + OpenShell blocked requests) ───────────
+  // In-memory approval queue (populated from NemoClaw/OpenShell polling)
+  // GET /api/approvals — list pending approvals
+  if (path === '/api/approvals' && req.method === 'GET') {
+    const isSSE = url.searchParams.get('stream') === '1';
+    if (isSSE) {
+      sse(sseClients.approvals);
+      // Send current snapshot immediately
+      res.write(`event: snapshot\ndata: ${JSON.stringify([...approvalQueue.values()])}\n\n`);
+    } else {
+      json(200, [...approvalQueue.values()]);
+    }
+    return;
+  }
+
+  // POST /api/approvals/:id — approve or reject
+  const approvalDecisionMatch = path.match(/^\/api\/approvals\/([^/]+)$/);
+  if (approvalDecisionMatch && req.method === 'POST') {
+    body(b => {
+      const id = approvalDecisionMatch[1];
+      const decision = b.decision; // 'approve' | 'reject'
+      if (!decision) return json(400, { error: 'decision required' });
+      const item = approvalQueue.get(id);
+      if (!item) return json(404, { error: 'approval not found' });
+      approvalQueue.delete(id);
+      // Notify SSE clients of the decision
+      const event = `event: decision\ndata: ${JSON.stringify({ id, decision })}\n\n`;
+      for (const c of sseClients.approvals) { try { c.write(event); } catch { sseClients.approvals.delete(c); } }
+      // If this is an OpenShell request, call OpenShell to allow/deny
+      if (item._openShellId) {
+        const action = decision === 'approve' ? 'allow' : 'deny';
+        const cmd = `wsl -d Ubuntu -- bash -c "source /home/bob/.nvm/nvm.sh && curl -sk -X POST https://127.0.0.1:8080/api/v1/requests/${item._openShellId}/${action} 2>/dev/null"`;
+        exec(cmd, { timeout: 5000 }, () => {}); // fire-and-forget
+      }
+      json(200, { ok: true, id, decision });
+    });
+    return;
+  }
+
+  // GET /api/nemoclaw/:name/approvals — poll OpenShell for blocked requests
+  const ncApprovalsMatch = path.match(/^\/api\/nemoclaw\/([^/]+)\/approvals$/);
+  if (ncApprovalsMatch && req.method === 'GET') {
+    const sbName = ncApprovalsMatch[1].replace(/[^a-z0-9-]/gi, '');
+    // Try OpenShell REST API for blocked requests
+    const cmd = `wsl -d Ubuntu -- bash -c "curl -sk https://127.0.0.1:8080/api/v1/requests?status=blocked 2>/dev/null"`;
+    exec(cmd, { timeout: 8000 }, (err, stdout) => {
+      try {
+        const raw = JSON.parse(stdout || '[]');
+        const requests = (Array.isArray(raw) ? raw : (raw.requests || raw.items || [])).map(r => ({
+          id: `os_${r.id || r.requestId || Math.random().toString(36).slice(2)}`,
+          taskId: sbName,
+          taskName: `Sandbox ${sbName}`,
+          agent: sbName,
+          reason: `Requête réseau bloquée : ${r.method || 'GET'} ${r.url || r.host || 'inconnu'}`,
+          riskLevel: r.risk || 'medium',
+          requestedAt: r.timestamp || new Date().toISOString(),
+          payload: r,
+          _openShellId: r.id || r.requestId,
+        }));
+        // Merge into global approvalQueue
+        for (const req of requests) {
+          if (!approvalQueue.has(req.id)) {
+            approvalQueue.set(req.id, req);
+            const event = `event: approval\ndata: ${JSON.stringify(req)}\n\n`;
+            for (const c of sseClients.approvals) { try { c.write(event); } catch { sseClients.approvals.delete(c); } }
+          }
+        }
+        json(200, requests);
+      } catch {
+        json(200, []); // graceful — OpenShell may not have blocked requests
+      }
+    });
+    return;
+  }
+
+  // GET /api/nemoclaw/sandboxes
+  if (path === '/api/nemoclaw/sandboxes' && req.method === 'GET') {
+    try {
+      const raw = await runNemoClawCmd('list');
+      const sandboxes = parseNemoClawList(raw);
+      json(200, sandboxes);
+    } catch (e) {
+      json(503, { error: 'NemoClaw non disponible', detail: e.message });
+    }
+    return;
+  }
+
+  // GET /api/nemoclaw/:name/status
+  const ncStatusMatch = path.match(/^\/api\/nemoclaw\/([^/]+)\/status$/);
+  if (ncStatusMatch && req.method === 'GET') {
+    try {
+      const raw = await runNemoClawCmd(`${ncStatusMatch[1]} status`);
+      json(200, parseNemoClawStatus(raw));
+    } catch (e) {
+      json(503, { error: 'NemoClaw non disponible', detail: e.message });
+    }
+    return;
+  }
+
+  // GET /api/nemoclaw/:name/logs — SSE streaming
+  const ncLogsMatch = path.match(/^\/api\/nemoclaw\/([^/]+)\/logs$/);
+  if (ncLogsMatch && req.method === 'GET') {
+    res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' });
+    res.write(':ok\n\n');
+    let child;
+    try {
+      child = spawn('wsl', ['-d', 'Ubuntu', '--', 'bash', '-lc', `nemoclaw ${ncLogsMatch[1]} logs --follow`], { stdio: ['ignore', 'pipe', 'pipe'] });
+      child.stdout.on('data', d => res.write(`data: ${JSON.stringify({ line: d.toString() })}\n\n`));
+      child.stderr.on('data', d => res.write(`data: ${JSON.stringify({ line: d.toString() })}\n\n`));
+      child.on('close', () => { res.write('data: {"done":true}\n\n'); res.end(); });
+      req.on('close', () => child.kill());
+    } catch (e) {
+      res.write(`data: ${JSON.stringify({ line: `Erreur: ${e.message}` })}\n\n`);
+      res.end();
+    }
+    return;
+  }
+
+  // POST /api/nemoclaw/:name/destroy
+  const ncDestroyMatch = path.match(/^\/api\/nemoclaw\/([^/]+)\/destroy$/);
+  if (ncDestroyMatch && req.method === 'POST') {
+    try {
+      await runNemoClawCmd(`${ncDestroyMatch[1]} destroy --yes`);
+      json(200, { ok: true });
+    } catch (e) {
+      json(503, { error: e.message });
+    }
+    return;
+  }
+
+  // POST /api/nemoclaw/:name/run-skill — execute a skill inside sandbox (SSE streaming)
+  const ncRunSkillMatch = path.match(/^\/api\/nemoclaw\/([^/]+)\/run-skill$/);
+  if (ncRunSkillMatch && req.method === 'POST') {
+    const sbName = ncRunSkillMatch[1].replace(/[^a-z0-9-]/gi, '');
+    res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' });
+    res.write(':ok\n\n');
+    body(b => {
+      const skill   = (b.skill   || '').replace(/[^a-zA-Z0-9_-]/g, '');
+      const prompt  = (b.prompt  || '').slice(0, 2000);
+      const model   = (b.model   || 'nvidia/nemotron-3-super-120b-a12b').replace(/[^a-zA-Z0-9_./-]/g, '');
+      const nvidiaKey = (apiKeys?.nvidia && decryptKey(apiKeys.nvidia)) || process.env.NVIDIA_API_KEY || '';
+      const envPrefix = nvidiaKey ? `export NVIDIA_API_KEY="${nvidiaKey}" && ` : '';
+      // Try nemoclaw run, fallback to openclaw agent --local
+      const safePrompt = prompt.replace(/"/g, '\\"').replace(/\$/g, '\\$');
+      const cmd = `wsl -d Ubuntu -- bash -c "${envPrefix}source /home/bob/.nvm/nvm.sh && /home/bob/.local/bin/nemoclaw ${sbName} run${skill ? ` --skill ${skill}` : ''} --model ${model} -- \\"${safePrompt}\\" 2>&1"`;
+      const proc = spawn('wsl', ['-d', 'Ubuntu', '--', 'bash', '-c',
+        `${envPrefix}source /home/bob/.nvm/nvm.sh && /home/bob/.local/bin/nemoclaw ${sbName} run${skill ? ` --skill ${skill}` : ''} --model ${model} -- "${safePrompt}" 2>&1`
+      ], { stdio: ['ignore', 'pipe', 'pipe'] });
+      proc.stdout.on('data', chunk => {
+        const lines = chunk.toString().split('\n').filter(Boolean);
+        for (const line of lines) {
+          try { res.write(`data: ${JSON.stringify({ line })}\n\n`); } catch { proc.kill(); }
+        }
+      });
+      proc.stderr.on('data', chunk => {
+        try { res.write(`data: ${JSON.stringify({ error: chunk.toString() })}\n\n`); } catch { proc.kill(); }
+      });
+      proc.on('close', code => {
+        try { res.write(`data: ${JSON.stringify({ done: true, exitCode: code })}\n\n`); res.end(); } catch {}
+      });
+      req.on('close', () => { try { proc.kill(); } catch {} });
+    });
+    return;
+  }
+
+  // GET /api/nemoclaw/:name/memory/:file — read memory file from sandbox
+  const ncMemGetMatch = path.match(/^\/api\/nemoclaw\/([^/]+)\/memory\/([^/]+)$/);
+  if (ncMemGetMatch && req.method === 'GET') {
+    const [, sbName, fileName] = ncMemGetMatch;
+    // Allowed memory files only
+    const ALLOWED_MEM = ['MEMORY.md', 'SOUL.md', 'AGENTS.md', 'HEARTBEAT.md', 'CLAUDE.md', 'NOTES.md', 'USER.md', 'IDENTITY.md', 'TOOLS.md'];
+    if (!ALLOWED_MEM.includes(fileName)) return json(400, { error: 'File not allowed' });
+    const safeBox = sbName.replace(/[^a-z0-9-]/gi, '');
+    const safeFile = fileName.replace(/[^A-Z0-9_.]/gi, '');
+    // Try: nemoclaw <name> exec -- cat /workspace/<file>
+    // Fallback: docker exec via container label
+    const cmd = `wsl -d Ubuntu -- bash -c "source /home/bob/.nvm/nvm.sh && /home/bob/.local/bin/nemoclaw ${safeBox} exec -- cat /workspace/${safeFile} 2>/dev/null || docker exec \\$(docker ps --filter label=nemoclaw.sandbox=${safeBox} -q | head -1) cat /workspace/${safeFile} 2>/dev/null"`;
+    exec(cmd, { timeout: 10000 }, (err, stdout) => {
+      if (err && !stdout) return json(200, { content: '', sandbox: safeBox, file: safeFile, empty: true });
+      json(200, { content: stdout || '', sandbox: safeBox, file: safeFile });
+    });
+    return;
+  }
+
+  // POST /api/nemoclaw/:name/memory/:file — write memory file to sandbox
+  const ncMemPostMatch = path.match(/^\/api\/nemoclaw\/([^/]+)\/memory\/([^/]+)$/);
+  if (ncMemPostMatch && req.method === 'POST') {
+    const [, sbName, fileName] = ncMemPostMatch;
+    const ALLOWED_MEM = ['MEMORY.md', 'SOUL.md', 'AGENTS.md', 'HEARTBEAT.md', 'CLAUDE.md', 'NOTES.md', 'USER.md', 'IDENTITY.md', 'TOOLS.md'];
+    if (!ALLOWED_MEM.includes(fileName)) return json(400, { error: 'File not allowed' });
+    const safeBox = sbName.replace(/[^a-z0-9-]/gi, '');
+    const safeFile = fileName.replace(/[^A-Z0-9_.]/gi, '');
+    body(b => {
+      const content = (b.content || '').replace(/'/g, "'\\''");
+      const cmd = `wsl -d Ubuntu -- bash -c "source /home/bob/.nvm/nvm.sh && (CONTAINER=\\$(docker ps --filter label=nemoclaw.sandbox=${safeBox} -q | head -1) && [ -n \\"\\$CONTAINER\\" ] && printf '%s' '${content}' | docker exec -i \\$CONTAINER sh -c 'cat > /workspace/${safeFile}' && echo OK) 2>&1"`;
+      exec(cmd, { timeout: 10000 }, (err, stdout) => {
+        if (err && !stdout?.includes('OK')) return json(503, { error: 'Could not write to sandbox — is it running?' });
+        json(200, { ok: true, sandbox: safeBox, file: safeFile });
+      });
+    });
+    return;
+  }
+
+  // POST /api/nemoclaw/onboard — launch onboarding (non-interactive with env vars)
+  if (path === '/api/nemoclaw/onboard' && req.method === 'POST') {
+    body(async b => {
+      const { name = 'main', provider = 'nvidia', model = '' } = b || {};
+      const safe = name.replace(/[^a-z0-9-]/gi, '');
+      try {
+        // Non-interactive onboard requires NVIDIA_API_KEY in WSL env
+        const nvidiaKey = (apiKeys.nvidia && decryptKey(apiKeys.nvidia)) || process.env.NVIDIA_API_KEY || '';
+        const envExport = nvidiaKey ? `NVIDIA_API_KEY=${nvidiaKey}` : '';
+        const cmd = `wsl -d Ubuntu -- bash -lc "${envExport ? `export ${envExport} && ` : ''}nemoclaw onboard --non-interactive --name ${safe} --provider ${provider}${model ? ` --model ${model}` : ''}" 2>&1`;
+        exec(cmd, { timeout: 120000 }, (err, stdout) => {
+          if (err && !stdout) return json(500, { error: err.message });
+          json(200, { ok: true, output: stdout });
+        });
+      } catch (e) {
+        json(500, { error: e.message });
+      }
+    });
+    return;
+  }
+
+  // ── Agents fleet (NemoClaw-aware: tries NemoClaw first, falls back to mock)
   if (path === '/api/agents' && req.method === 'GET') {
+    try {
+      const raw = await runNemoClawCmd('list');
+      const sandboxes = parseNemoClawList(raw);
+      if (sandboxes.length > 0) {
+        json(200, sandboxesToAgents(sandboxes));
+        return;
+      }
+    } catch { /* NemoClaw not installed, fall through to mock */ }
     json(200, [...AGENTS.values()]);
     return;
   }
@@ -2172,6 +2558,319 @@ const server = http.createServer((req, res) => {
       installed: false,
       message: 'openclaw TUI requires NemoClaw to be installed locally. Use the Agent Chat module instead.',
     });
+    return;
+  }
+
+  // ─── P1-1: GET /api/health/probes — état réel des providers LLM ─────────────
+  if (path === '/api/health/probes' && req.method === 'GET') {
+    const providers = [
+      { id: 'anthropic',   label: 'Anthropic Claude', url: 'https://api.anthropic.com',         authHeader: () => apiKeys.anthropic ? `x-api-key: ${decryptKey(apiKeys.anthropic)}` : null },
+      { id: 'openai',      label: 'OpenAI',            url: 'https://api.openai.com',            authHeader: () => apiKeys.openai    ? `Bearer ${decryptKey(apiKeys.openai)}`     : null },
+      { id: 'nvidia',      label: 'NVIDIA NIM',        url: 'https://integrate.api.nvidia.com',  authHeader: () => apiKeys.nvidia    ? `Bearer ${decryptKey(apiKeys.nvidia)}`     : null },
+      { id: 'nemoclaw',    label: 'NemoClaw (local)',   url: `http://localhost:${PORT}/api/ping`, authHeader: () => null },
+      { id: 'ollama',      label: 'Ollama (local)',     url: 'http://localhost:11434/api/version', authHeader: () => null },
+    ];
+    const results = await Promise.all(providers.map(async p => {
+      const start = Date.now();
+      try {
+        const headers = { 'Content-Type': 'application/json' };
+        const auth = p.authHeader();
+        if (auth) {
+          const [k, v] = auth.split(': ');
+          headers[k] = v;
+        }
+        const r = await fetch(p.url, { headers, signal: AbortSignal.timeout(4000), method: 'GET' });
+        const latency = Date.now() - start;
+        return { id: p.id, label: p.label, status: r.ok || r.status < 500 ? 'up' : 'degraded', latency, httpStatus: r.status };
+      } catch (e) {
+        const latency = Date.now() - start;
+        return { id: p.id, label: p.label, status: 'down', latency, error: e.message };
+      }
+    }));
+    json(200, results);
+    return;
+  }
+
+  // ─── P1-2: GET /api/presence — agents actifs/connectés ──────────────────────
+  if (path === '/api/presence' && req.method === 'GET') {
+    try {
+      const raw = await runNemoClawCmd('list');
+      const sandboxes = parseNemoClawList(raw);
+      const agents = sandboxesToAgents(sandboxes);
+      json(200, agents.map(a => ({
+        id: a.id, label: a.label, status: a.status,
+        model: a.model, provider: a.provider, lastSeen: new Date().toISOString(),
+      })));
+    } catch {
+      // Fallback: retourne les agents in-memory
+      const agentList = [...AGENTS.values()].map(a => ({
+        id: a.id, label: a.name || a.id,
+        status: a.status === 'active' ? 'connected' : a.status === 'offline' ? 'offline' : 'idle',
+        model: 'unknown', provider: 'local', lastSeen: new Date().toISOString(),
+      }));
+      json(200, agentList);
+    }
+    return;
+  }
+
+  // ─── P1-3: GET /api/git/branches + GET /api/git/log ──────────────────────────
+  if (path === '/api/git/branches' && req.method === 'GET') {
+    const repoDir = dirname(fileURLToPath(import.meta.url));
+    exec(`git -C "${repoDir}" branch -a --format="%(refname:short)"`, { timeout: 8000 }, (err, stdout) => {
+      if (err) return json(200, { branches: ['main'], current: 'main', error: err.message });
+      const branches = stdout.trim().split('\n').map(b => b.trim()).filter(Boolean);
+      exec(`git -C "${repoDir}" rev-parse --abbrev-ref HEAD`, { timeout: 3000 }, (e2, cur) => {
+        json(200, { branches, current: (cur || 'main').trim() });
+      });
+    });
+    return;
+  }
+  if (path === '/api/git/log' && req.method === 'GET') {
+    const repoDir = dirname(fileURLToPath(import.meta.url));
+    const branch  = (url.searchParams.get('branch') || 'HEAD').replace(/[^a-zA-Z0-9/_.-]/g, '');
+    const limit   = Math.min(parseInt(url.searchParams.get('limit') || '30', 10), 100);
+    const fmt = '--pretty=format:{"hash":"%H","short":"%h","subject":"%s","author":"%an","email":"%ae","date":"%aI","refs":"%D"}';
+    exec(`git -C "${repoDir}" log ${branch} ${fmt} -n ${limit}`, { timeout: 10000 }, (err, stdout) => {
+      if (err) return json(200, []);
+      const lines = stdout.trim().split('\n').filter(Boolean);
+      const commits = lines.map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+      json(200, commits);
+    });
+    return;
+  }
+
+  // ─── P1-4: POST /api/shell — exécution de commandes whitelistées ────────────
+  if (path === '/api/shell' && req.method === 'POST') {
+    body(async b => {
+      const cmd = (b.command || '').trim();
+      if (!cmd) return json(400, { error: 'command required' });
+      // Whitelist de commandes autorisées (sécurité)
+      const ALLOWED_CMDS = [
+        /^ls(\s|$)/, /^pwd$/, /^echo\s/, /^cat\s[\w./-]+$/, /^node\s-e\s/,
+        /^npm\s(list|run|test|start)\b/, /^git\s(log|status|branch|diff|show)\b/,
+        /^ps\s/, /^top\s/, /^df\s/, /^du\s/, /^env$/, /^date$/,
+        /^curl\s/, /^ping\s-c\s\d+\s/,
+      ];
+      const allowed = ALLOWED_CMDS.some(re => re.test(cmd));
+      if (!allowed) {
+        return json(403, { error: `Commande non autorisée : "${cmd.slice(0, 60)}"`, hint: 'Seules les commandes de lecture/diagnostic sont permises.' });
+      }
+      res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' });
+      res.write(':ok\n\n');
+      const child = spawn('bash', ['-c', cmd], { cwd: dirname(fileURLToPath(import.meta.url)), timeout: 30000 });
+      child.stdout.on('data', d => res.write(`data: ${JSON.stringify({ stdout: d.toString() })}\n\n`));
+      child.stderr.on('data', d => res.write(`data: ${JSON.stringify({ stderr: d.toString() })}\n\n`));
+      child.on('close', code => {
+        res.write(`data: ${JSON.stringify({ exit: code })}\n\n`);
+        res.end();
+      });
+      req.on('close', () => { try { child.kill(); } catch (_) {} });
+    });
+    return;
+  }
+
+  // ─── P1-5: GET /api/traces — traces OTel depuis DB task_activities ───────────
+  if (path === '/api/traces' && req.method === 'GET') {
+    const limitT = Math.min(parseInt(url.searchParams.get('limit') || '50', 10), 200);
+    pool.query(`
+      SELECT ta.id, ta.type, ta.label, ta.message, ta.created_at,
+             t.id AS task_id, t.titre AS task_name, t.agent, t.cout, t.tokens_in, t.tokens_out, t.llm_model
+      FROM task_activities ta
+      JOIN tasks t ON t.id = ta.task_id
+      ORDER BY ta.created_at DESC
+      LIMIT $1
+    `, [limitT]).then(({ rows }) => {
+      const spans = rows.map(r => ({
+        traceId:   `tr_${r.id}`,
+        spanId:    r.id,
+        operation: r.label || r.type,
+        status:    r.type === 'failed' ? 'error' : 'ok',
+        durationMs: null,
+        model:      r.llm_model || null,
+        agent:      r.agent,
+        taskId:     r.task_id,
+        taskName:   r.task_name,
+        cost:       r.cout,
+        tokensIn:   r.tokens_in,
+        tokensOut:  r.tokens_out,
+        ts:         r.created_at,
+      }));
+      json(200, { spans, total: spans.length });
+    }).catch(err => json(500, { error: err.message }));
+    return;
+  }
+
+  // ─── P1-6: GET /api/pairing/qr — génère un token JWT signé pour pairing ──────
+  if (path === '/api/pairing/qr' && req.method === 'GET') {
+    if (!SECRET) return json(503, { error: 'CLAWBOARD_SECRET requis pour le pairing sécurisé' });
+    const canal    = url.searchParams.get('canal') || 'telegram';
+    const dest     = url.searchParams.get('destinataire') || '';
+    const ttlSec   = 300; // 5 minutes
+    const expiresAt = Date.now() + ttlSec * 1000;
+    // Token signé HMAC-SHA256 (pas besoin de JWT complet)
+    const payload  = JSON.stringify({ canal, dest, expiresAt, iss: 'clawboard', iat: Date.now() });
+    const payloadB64 = Buffer.from(payload).toString('base64url');
+    const sig = crypto.createHmac('sha256', SECRET).update(payloadB64).digest('base64url');
+    const token = `${payloadB64}.${sig}`;
+    // URL de pairing selon le canal
+    let pairingUrl;
+    if (canal === 'telegram')      pairingUrl = `https://t.me/nemoclaw_bot?start=${token}`;
+    else if (canal === 'discord')  pairingUrl = `https://discord.com/oauth2/authorize?token=${token}`;
+    else if (canal === 'whatsapp') pairingUrl = `https://wa.me/?text=nemoclaw:${token}`;
+    else                           pairingUrl = `${token}`;
+    json(200, { token, pairingUrl, canal, dest, expiresIn: ttlSec, expiresAt: new Date(expiresAt).toISOString() });
+    return;
+  }
+
+  // ─── P1-7: POST /api/channels/:id/test — test connectivité canal ─────────────
+  const channelTestMatch = path.match(/^\/api\/channels\/([^/]+)\/test$/);
+  if (channelTestMatch && req.method === 'POST') {
+    body(async b => {
+      const channelId = channelTestMatch[1];
+      const cfg = sanitizeObject(b) || {};
+      try {
+        if (channelId === 'telegram') {
+          if (!cfg.token) return json(400, { ok: false, error: 'token manquant' });
+          const r = await fetch(`https://api.telegram.org/bot${cfg.token}/getMe`, { signal: AbortSignal.timeout(5000) });
+          const data = await r.json();
+          if (!data.ok) return json(200, { ok: false, error: data.description || 'Token invalide' });
+          json(200, { ok: true, name: data.result?.first_name, username: data.result?.username });
+        } else if (channelId === 'discord') {
+          if (!cfg.webhookUrl) return json(400, { ok: false, error: 'webhookUrl manquant' });
+          const r = await fetch(cfg.webhookUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content: '✅ Test Clawboard — connexion OK' }), signal: AbortSignal.timeout(5000) });
+          json(200, { ok: r.ok, httpStatus: r.status });
+        } else if (channelId === 'slack') {
+          if (!cfg.webhookUrl) return json(400, { ok: false, error: 'webhookUrl manquant' });
+          const r = await fetch(cfg.webhookUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: '✅ Test Clawboard — connexion OK' }), signal: AbortSignal.timeout(5000) });
+          json(200, { ok: r.ok, httpStatus: r.status });
+        } else {
+          // Canal générique / webhook custom
+          const targetUrl = cfg.webhookUrl || cfg.serverUrl || cfg.url;
+          if (!targetUrl) return json(400, { ok: false, error: 'URL du canal manquante' });
+          const r = await fetch(targetUrl, { signal: AbortSignal.timeout(5000) });
+          json(200, { ok: r.ok || r.status < 500, httpStatus: r.status });
+        }
+      } catch (e) {
+        json(200, { ok: false, error: e.message });
+      }
+    });
+    return;
+  }
+
+  // ─── P1-8: POST /api/recurrences/:id/run — déclenche manuellement ────────────
+  const recRunMatch = path.match(/^\/api\/recurrences\/([^/]+)\/run$/);
+  if (recRunMatch && req.method === 'POST') {
+    const recId = recRunMatch[1];
+    pool.query('SELECT * FROM recurrences WHERE id=$1', [recId]).then(async ({ rows }) => {
+      if (!rows.length) return json(404, { error: 'Récurrence introuvable' });
+      const rec = rows[0];
+      // Crée une tâche à partir du modèle associé
+      let taskData = null;
+      if (rec.modele_id) {
+        const { rows: mRows } = await pool.query('SELECT * FROM modeles WHERE id=$1', [rec.modele_id]);
+        if (mRows.length) {
+          const m = mRows[0];
+          const taskId = `tsk_rec_${Date.now()}`;
+          await pool.query(
+            `INSERT INTO tasks (id, titre, modele_id, statut, agent, skill_name, instructions, recurrence_human, created_at, updated_at)
+             VALUES ($1,$2,$3,'planifie',$4,$5,$6,$7,NOW(),NOW())`,
+            [taskId, `[Récurrence] ${m.name || m.nom}`, rec.modele_id, m.agent || 'main', m.skill_name || null, m.instructions || null, rec.name]
+          );
+          // Mise à jour last_run de la récurrence
+          await pool.query(`UPDATE recurrences SET last_run=NOW(), run_count=COALESCE(run_count,0)+1 WHERE id=$1`, [recId]);
+          taskData = { id: taskId, titre: `[Récurrence] ${m.name || m.nom}` };
+        }
+      }
+      json(200, { ok: true, recurrenceId: recId, task: taskData, message: taskData ? 'Tâche créée depuis la récurrence' : 'Récurrence déclenchée (sans modèle associé)' });
+    }).catch(err => json(500, { error: err.message }));
+    return;
+  }
+
+  // ─── P1-9: POST /api/plugins/install — installe/active un plugin en DB ───────
+  if (path === '/api/plugins/install' && req.method === 'POST') {
+    body(async b => {
+      const safe = sanitizeObject(b);
+      const pkg  = safe.pkg || safe.id;
+      if (!pkg) return json(400, { error: 'pkg requis' });
+      // Upsert dans la table skills (réutilisation — les plugins sont des skills npm)
+      const id = `plugin_${pkg.replace(/[^a-z0-9]/gi, '_')}`;
+      await pool.query(
+        `INSERT INTO skills (id, nom, description, tags, status, category)
+         VALUES ($1,$2,$3,$4,'active','npm')
+         ON CONFLICT (id) DO UPDATE SET status='active', updated_at=NOW()`,
+        [id, safe.name || pkg, safe.description || `Plugin npm : ${pkg}`, ['plugin', 'npm']]
+      ).catch(() => {
+        // Si la colonne status/category n'existe pas encore, fallback simple
+        return pool.query(
+          `INSERT INTO skills (id, nom, description, tags) VALUES ($1,$2,$3,$4) ON CONFLICT (id) DO NOTHING`,
+          [id, safe.name || pkg, safe.description || `Plugin npm : ${pkg}`, ['plugin', 'npm']]
+        );
+      });
+      json(200, { ok: true, id, pkg, message: `Plugin "${pkg}" enregistré en base.` });
+    });
+    return;
+  }
+
+  // ─── P1-10: TOTP MFA — setup / verify / disable / status ────────────────────
+  // Implémentation HMAC-SHA1 TOTP (RFC 6238) sans dépendance externe
+  function totpGenerateSecret() {
+    return crypto.randomBytes(20).toString('base64').replace(/[^A-Z2-7]/gi, 'A').toUpperCase().slice(0, 32);
+  }
+  function totpHotp(secretBase32, counter) {
+    const key = Buffer.from(secretBase32.replace(/\s/g,'').toUpperCase().padEnd(32,'='), 'base64');
+    const buf = Buffer.alloc(8);
+    let c = counter;
+    for (let i = 7; i >= 0; i--) { buf[i] = c & 0xff; c = Math.floor(c / 256); }
+    const mac = crypto.createHmac('sha1', key).update(buf).digest();
+    const offset = mac[mac.length - 1] & 0x0f;
+    const code = ((mac[offset] & 0x7f) << 24 | (mac[offset+1] & 0xff) << 16 | (mac[offset+2] & 0xff) << 8 | (mac[offset+3] & 0xff)) % 1_000_000;
+    return String(code).padStart(6, '0');
+  }
+  function totpVerify(secret, token, window = 1) {
+    const counter = Math.floor(Date.now() / 30000);
+    for (let i = -window; i <= window; i++) {
+      if (totpHotp(secret, counter + i) === token) return true;
+    }
+    return false;
+  }
+
+  if (path === '/api/security/totp/status' && req.method === 'GET') {
+    pool.query(`SELECT value FROM settings WHERE key='totp_enabled' LIMIT 1`).then(({ rows }) => {
+      json(200, { enabled: rows[0]?.value === 'true' });
+    }).catch(() => json(200, { enabled: false }));
+    return;
+  }
+  if (path === '/api/security/totp/setup' && req.method === 'POST') {
+    const secret = totpGenerateSecret();
+    // Stocke le secret temporaire en attendant vérification
+    pool.query(`INSERT INTO settings (key,value) VALUES ('totp_pending_secret',$1) ON CONFLICT (key) DO UPDATE SET value=$1, updated_at=NOW()`, [secret])
+      .catch(() => {}); // table settings peut ne pas avoir updated_at
+    const otpAuthUrl = `otpauth://totp/ClawBoard:admin?secret=${secret}&issuer=ClawBoard&algorithm=SHA1&digits=6&period=30`;
+    json(200, { secret, otpAuthUrl });
+    return;
+  }
+  if (path === '/api/security/totp/verify' && req.method === 'POST') {
+    body(async b => {
+      const token = String(b.token || '').trim();
+      if (!/^\d{6}$/.test(token)) return json(400, { error: 'Token invalide (6 chiffres requis)' });
+      const { rows } = await pool.query(`SELECT value FROM settings WHERE key='totp_pending_secret' LIMIT 1`).catch(() => ({ rows: [] }));
+      const secret = rows[0]?.value;
+      if (!secret) return json(400, { error: 'Aucun setup TOTP en cours. Relancez /api/security/totp/setup.' });
+      if (!totpVerify(secret, token)) return json(401, { error: 'Code incorrect ou expiré' });
+      // Active le TOTP et enregistre le secret définitif
+      await pool.query(`INSERT INTO settings (key,value) VALUES ('totp_secret',$1) ON CONFLICT (key) DO UPDATE SET value=$1`, [secret]).catch(() => {});
+      await pool.query(`INSERT INTO settings (key,value) VALUES ('totp_enabled','true') ON CONFLICT (key) DO UPDATE SET value='true'`).catch(() => {});
+      await pool.query(`DELETE FROM settings WHERE key='totp_pending_secret'`).catch(() => {});
+      json(200, { ok: true, message: 'TOTP activé avec succès' });
+    });
+    return;
+  }
+  if (path === '/api/security/totp/disable' && req.method === 'POST') {
+    Promise.all([
+      pool.query(`INSERT INTO settings (key,value) VALUES ('totp_enabled','false') ON CONFLICT (key) DO UPDATE SET value='false'`),
+      pool.query(`DELETE FROM settings WHERE key IN ('totp_secret','totp_pending_secret')`),
+    ]).then(() => json(200, { ok: true, message: 'TOTP désactivé' }))
+      .catch(err => json(500, { error: err.message }));
     return;
   }
 
